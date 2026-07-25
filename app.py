@@ -28,13 +28,42 @@ def reset_db():
 
 init_db()
 
-# --- GESTIONE STATO (Session State per coordinate e persistenza analisi) ---
+# --- FUNZIONE PER SCARICARE IL METEO (DSS) ---
+def fetch_meteo(lat, lon):
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max&timezone=Europe/Berlin"
+    response = requests.get(url).json()
+    
+    if "daily" in response:
+        daily = response["daily"]
+        df_meteo = pd.DataFrame({
+            "Data": daily["time"],
+            "Temp Max (°C)": daily["temperature_2m_max"],
+            "Temp Min (°C)": daily["temperature_2m_min"],
+            "Pioggia (mm)": daily["precipitation_sum"],
+            "Prob. Pioggia (%)": daily["precipitation_probability_max"]
+        })
+        
+        stati = []
+        for _, row in df_meteo.iterrows():
+            if row["Pioggia (mm)"] > 2:
+                stati.append("🔴 [ALLERTA] Rischio Pioggia - Evita Trattamenti")
+            elif row["Temp Max (°C)"] > 33:
+                stati.append("🟡 [ATTENZIONE] Stress Termico / Caldo")
+            else:
+                stati.append("🟢 [OK] Condizioni Stabili")
+        df_meteo["Stato Operativo"] = stati
+        return df_meteo
+    return None
+
+# --- GESTIONE STATO ---
 if 'current_lat' not in st.session_state:
     st.session_state.current_lat = 43.007721
 if 'current_lon' not in st.session_state:
     st.session_state.current_lon = 12.146461
+
+# Calcoliamo l'analisi meteo iniziale se non esiste
 if 'analysis_df' not in st.session_state:
-    st.session_state.analysis_df = None
+    st.session_state.analysis_df = fetch_meteo(st.session_state.current_lat, st.session_state.current_lon)
 
 # --- LAYOUT PRINCIPALE & SIDEBAR ---
 st.title("🌾 AgriDSS: Smart Farming & Registro Territoriale")
@@ -51,7 +80,7 @@ if st.sidebar.button("🗑️ Svuota Registro (Cancella Tutti i Messaggi)", type
 
 # --- MAPPA INTERATTIVA FLUIDA ---
 st.subheader("📍 Mappa Appezzamenti & Scouting")
-st.markdown("💡 *Tocca o clicca un punto qualsiasi della mappa per selezionare la particella.*")
+st.markdown("💡 *Tocca o clicca un punto qualsiasi della mappa per selezionare la particella e aggiornare istantaneamente il meteo.*")
 
 m = folium.Map(location=[st.session_state.current_lat, st.session_state.current_lon], zoom_start=12)
 
@@ -79,49 +108,27 @@ for _, row in df_comm.iterrows():
 # Mappa ottimizzata
 map_data = st_folium(m, width=1000, height=400, returned_objects=["last_clicked"])
 
+# Se l'utente clicca sulla mappa, aggiorniamo coordinate E ricalcoliamo il meteo al volo!
 if map_data and map_data.get("last_clicked"):
     st.session_state.current_lat = map_data["last_clicked"]["lat"]
     st.session_state.current_lon = map_data["last_clicked"]["lng"]
+    st.session_state.analysis_df = fetch_meteo(st.session_state.current_lat, st.session_state.current_lon)
     st.rerun()
 
 st.success(f"🎯 **Particella Attiva Selezionata:** Latitudine {st.session_state.current_lat:.5f}, Longitudine {st.session_state.current_lon:.5f}")
 
-# --- ANALISI DSS & METEO (Con persistenza a schermo) ---
+# --- ANALISI DSS & METEO (Visibile e reattiva) ---
 st.markdown("### 📊 Analisi DSS & Rischio Fitosanitario della Particella Selezionata")
 
-if st.button("🚀 Esegui / Aggiorna Analisi Meteo", type="primary"):
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={st.session_state.current_lat}&longitude={st.session_state.current_lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max&timezone=Europe/Berlin"
-    response = requests.get(url).json()
-    
-    if "daily" in response:
-        daily = response["daily"]
-        df_meteo = pd.DataFrame({
-            "Data": daily["time"],
-            "Temp Max (°C)": daily["temperature_2m_max"],
-            "Temp Min (°C)": daily["temperature_2m_min"],
-            "Pioggia (mm)": daily["precipitation_sum"],
-            "Prob. Pioggia (%)": daily["precipitation_probability_max"]
-        })
-        
-        stati = []
-        for _, row in df_meteo.iterrows():
-            if row["Pioggia (mm)"] > 2:
-                stati.append("🔴 [ALLERTA] Rischio Pioggia - Evita Trattamenti")
-            elif row["Temp Max (°C)"] > 33:
-                stati.append("🟡 [ATTENZIONE] Stress Termico / Caldo")
-            else:
-                stati.append("🟢 [OK] Condizioni Stabili")
-        df_meteo["Stato Operativo"] = stati
-        
-        # Salviamo nel session state così non scompare
-        st.session_state.analysis_df = df_meteo
+if st.button("🚀 Aggiorna Analisi Meteo", type="primary"):
+    st.session_state.analysis_df = fetch_meteo(st.session_state.current_lat, st.session_state.current_lon)
+    st.rerun()
 
-# Mostriamo la tabella se è stata generata
 if st.session_state.analysis_df is not None:
-    st.info(f"📋 Mostrando l'analisi meteo per le coordinate attive: `{st.session_state.current_lat:.4f}, {st.session_state.current_lon:.4f}`")
+    st.info(f"📋 Tabella rischio meteo per le coordinate attive: `{st.session_state.current_lat:.4f}, {st.session_state.current_lon:.4f}`")
     st.dataframe(st.session_state.analysis_df, use_container_width=True)
 else:
-    st.warning("⚠️ Clicca sul pulsante sopra per generare l'analisi meteo e di rischio della particella selezionata.")
+    st.warning("⚠️ Impossibile caricare i dati meteo per questa posizione. Riprova a cliccare.")
 
 st.markdown("---")
 
