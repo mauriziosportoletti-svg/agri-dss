@@ -127,37 +127,47 @@ if map_data and map_data.get("last_clicked"):
 
 st.success(f"🎯 Particella attiva: Lat {st.session_state.lat:.5f}, Lon {st.session_state.lon:.5f}")
 
-# --- ANALISI METEO DSS (Con pulsante sicuro e persistenza) ---
+# --- ANALISI METEO DSS (Con protezione timeout per evitare blocchi) ---
 st.subheader("📊 Analisi DSS & Rischio Fitosanitario")
 
 if st.button("🚀 Esegui Analisi Meteo sul Campo", type="primary"):
     url = f"https://api.open-meteo.com/v1/forecast?latitude={st.session_state.lat}&longitude={st.session_state.lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max&timezone=Europe/Berlin"
-    response = requests.get(url).json()
     
-    if "daily" in response:
-        daily = response["daily"]
-        df = pd.DataFrame({
-            "Data": daily["time"],
-            "Temp Max (°C)": daily["temperature_2m_max"],
-            "Temp Min (°C)": daily["temperature_2m_min"],
-            "Pioggia (mm)": daily["precipitation_sum"],
-            "Prob. Pioggia (%)": daily["precipitation_probability_max"]
-        })
+    try:
+        # Aggiunto timeout a 5 secondi per evitare blocchi infiniti
+        response = requests.get(url, timeout=5)
+        data = response.json()
         
-        stati = []
-        for i, row in df.iterrows():
-            if row["Pioggia (mm)"] > 2:
-                stati.append("🔴 [ALLERTA] Rischio Pioggia - Evita Trattamenti")
-            elif row["Temp Max (°C)"] > 33:
-                stati.append("🟡 [ATTENZIONE] Stress Termico / Caldo")
-            else:
-                stati.append("🟢 [OK] Condizioni Stabili")
-        df["Stato Operativo"] = stati
-        
-        # Salviamo in memoria così non sparisce
-        st.session_state.df_meteo = df
+        if "daily" in data:
+            daily = data["daily"]
+            df = pd.DataFrame({
+                "Data": daily["time"],
+                "Temp Max (°C)": daily["temperature_2m_max"],
+                "Temp Min (°C)": daily["temperature_2m_min"],
+                "Pioggia (mm)": daily["precipitation_sum"],
+                "Prob. Pioggia (%)": daily["precipitation_probability_max"]
+            })
+            
+            stati = []
+            for i, row in df.iterrows():
+                if row["Pioggia (mm)"] > 2:
+                    stati.append("🔴 [ALLERTA] Rischio Pioggia - Evita Trattamenti")
+                elif row["Temp Max (°C)"] > 33:
+                    stati.append("🟡 [ATTENZIONE] Stress Termico / Caldo")
+                else:
+                    stati.append("🟢 [OK] Condizioni Stabili")
+            df["Stato Operativo"] = stati
+            
+            st.session_state.df_meteo = df
+        else:
+            st.error("⚠️ Risposta inattesa dal server meteo.")
+            
+    except requests.exceptions.Timeout:
+        st.error("⏳ Connessione scaduta: il server meteo ci ha messo troppo a rispondere. Riprova tra un attimo.")
+    except Exception as e:
+        st.error(f"⚠️ Errore di connessione: {e}")
 
-# Mostriamo la tabella se è stata calcolata
+# Mostriamo la tabella se è stata calcolata correttamente
 if st.session_state.df_meteo is not None:
     st.info(f"📋 Dati meteo attivi per le coordinate: `{st.session_state.lat:.4f}, {st.session_state.lon:.4f}`")
     st.dataframe(st.session_state.df_meteo, use_container_width=True)
