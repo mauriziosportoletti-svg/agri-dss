@@ -127,14 +127,13 @@ if map_data and map_data.get("last_clicked"):
 
 st.success(f"🎯 Particella attiva: Lat {st.session_state.lat:.5f}, Lon {st.session_state.lon:.5f}")
 
-# --- ANALISI METEO DSS (Con protezione timeout per evitare blocchi) ---
+# --- ANALISI METEO DSS (Con diagnostica errori dettagliata) ---
 st.subheader("📊 Analisi DSS & Rischio Fitosanitario")
 
 if st.button("🚀 Esegui Analisi Meteo sul Campo", type="primary"):
     url = f"https://api.open-meteo.com/v1/forecast?latitude={st.session_state.lat}&longitude={st.session_state.lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max&timezone=Europe/Berlin"
     
     try:
-        # Aggiunto timeout a 5 secondi per evitare blocchi infiniti
         response = requests.get(url, timeout=5)
         data = response.json()
         
@@ -160,10 +159,11 @@ if st.button("🚀 Esegui Analisi Meteo sul Campo", type="primary"):
             
             st.session_state.df_meteo = df
         else:
-            st.error("⚠️ Risposta inattesa dal server meteo.")
+            # Mostra esattamente cosa ha risposto il server per capire l'errore
+            st.error(f"⚠️ Il server meteo ha restituito questo errore: `{data}`")
             
     except requests.exceptions.Timeout:
-        st.error("⏳ Connessione scaduta: il server meteo ci ha messo troppo a rispondere. Riprova tra un attimo.")
+        st.error("⏳ Connessione scaduta: il server meteo ci ha messo troppo a rispondere.")
     except Exception as e:
         st.error(f"⚠️ Errore di connessione: {e}")
 
