@@ -51,45 +51,13 @@ def get_comments():
     conn.close()
     return df_comments
 
-# --- GESTIONE STATO COORDINATE & METEO ---
+# --- GESTIONE STATO COORDINATE & ANALISI ---
 if 'lat' not in st.session_state:
     st.session_state.lat = 43.007721
 if 'lon' not in st.session_state:
     st.session_state.lon = 12.146461
-if 'weather_df' not in st.session_state:
-    st.session_state.weather_df = None
-if 'last_fetched_lat' not in st.session_state:
-    st.session_state.last_fetched_lat = None
-
-# Funzione per scaricare il meteo
-def fetch_weather(lat, lon):
-    try:
-        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max&timezone=Europe/Berlin"
-        response = requests.get(url).json()
-        
-        if "daily" in response:
-            daily = response["daily"]
-            df = pd.DataFrame({
-                "Data": daily["time"],
-                "Temp Max (°C)": daily["temperature_2m_max"],
-                "Temp Min (°C)": daily["temperature_2m_min"],
-                "Pioggia (mm)": daily["precipitation_sum"],
-                "Prob. Pioggia (%)": daily["precipitation_probability_max"]
-            })
-            
-            stati = []
-            for _, row in df.iterrows():
-                if row["Pioggia (mm)"] > 2:
-                    stati.append("🔴 [ALLERTA] Rischio Pioggia - Evita Trattamenti")
-                elif row["Temp Max (°C)"] > 33:
-                    stati.append("🟡 [ATTENZIONE] Stress Termico / Caldo")
-                else:
-                    stati.append("🟢 [OK] Condizioni Stabili")
-            df["Stato Operativo"] = stati
-            return df
-    except Exception:
-        pass
-    return None
+if 'df_meteo' not in st.session_state:
+    st.session_state.df_meteo = None
 
 # --- SIDEBAR: CONFIGURAZIONE & GESTIONE ---
 st.sidebar.header("⚙️ Configurazione Campo")
@@ -128,7 +96,7 @@ st.title("🌾 AgriDSS: Mappa, Meteo e Community Locale")
 
 # --- MAPPA INTERATTIVA ---
 st.subheader("📍 Mappa Appezzamenti (Clicca sul tuo campo)")
-st.markdown("💡 *Clicca un punto qualsiasi della mappa: la particella si sposterà lì e il meteo si aggiornerà automaticamente.*")
+st.markdown("💡 *Clicca un punto qualsiasi della mappa per spostare la particella verde.*")
 
 m = folium.Map(location=[st.session_state.lat, st.session_state.lon], zoom_start=12)
 
@@ -152,31 +120,49 @@ for _, row in df_comm_map.iterrows():
 
 map_data = st_folium(m, width=700, height=350)
 
-# Se l'utente clicca sulla mappa, aggiorniamo le coordinate e forziamo il ricalcolo meteo
 if map_data and map_data.get("last_clicked"):
-    new_lat = map_data["last_clicked"]["lat"]
-    new_lon = map_data["last_clicked"]["lng"]
-    if new_lat != st.session_state.lat or new_lon != st.session_state.lon:
-        st.session_state.lat = new_lat
-        st.session_state.lon = new_lon
-        st.session_state.weather_df = fetch_weather(new_lat, new_lon)
-        st.rerun()
+    st.session_state.lat = map_data["last_clicked"]["lat"]
+    st.session_state.lon = map_data["last_clicked"]["lng"]
+    st.rerun()
 
 st.success(f"🎯 Particella attiva: Lat {st.session_state.lat:.5f}, Lon {st.session_state.lon:.5f}")
 
-# --- ANALISI METEO DSS (Sempre visibile e automatica) ---
+# --- ANALISI METEO DSS (Con pulsante sicuro e persistenza) ---
 st.subheader("📊 Analisi DSS & Rischio Fitosanitario")
 
-# Se non abbiamo ancora scaricato il meteo (es. al primo avvio), lo scarichiamo ora
-if st.session_state.weather_df is None or st.session_state.last_fetched_lat != st.session_state.lat:
-    st.session_state.weather_df = fetch_weather(st.session_state.lat, st.session_state.lon)
-    st.session_state.last_fetched_lat = st.session_state.lat
+if st.button("🚀 Esegui Analisi Meteo sul Campo", type="primary"):
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={st.session_state.lat}&longitude={st.session_state.lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max&timezone=Europe/Berlin"
+    response = requests.get(url).json()
+    
+    if "daily" in response:
+        daily = response["daily"]
+        df = pd.DataFrame({
+            "Data": daily["time"],
+            "Temp Max (°C)": daily["temperature_2m_max"],
+            "Temp Min (°C)": daily["temperature_2m_min"],
+            "Pioggia (mm)": daily["precipitation_sum"],
+            "Prob. Pioggia (%)": daily["precipitation_probability_max"]
+        })
+        
+        stati = []
+        for i, row in df.iterrows():
+            if row["Pioggia (mm)"] > 2:
+                stati.append("🔴 [ALLERTA] Rischio Pioggia - Evita Trattamenti")
+            elif row["Temp Max (°C)"] > 33:
+                stati.append("🟡 [ATTENZIONE] Stress Termico / Caldo")
+            else:
+                stati.append("🟢 [OK] Condizioni Stabili")
+        df["Stato Operativo"] = stati
+        
+        # Salviamo in memoria così non sparisce
+        st.session_state.df_meteo = df
 
-# Mostriamo la tabella in modo stabile
-if st.session_state.weather_df is not None:
-    st.dataframe(st.session_state.weather_df, use_container_width=True)
+# Mostriamo la tabella se è stata calcolata
+if st.session_state.df_meteo is not None:
+    st.info(f"📋 Dati meteo attivi per le coordinate: `{st.session_state.lat:.4f}, {st.session_state.lon:.4f}`")
+    st.dataframe(st.session_state.df_meteo, use_container_width=True)
 else:
-    st.warning("⚠️ Impossibile caricare i dati meteo al momento. Verifica la connessione.")
+    st.warning("👆 Clicca sul pulsante sopra per caricare l'analisi meteo e di rischio della particella selezionata.")
 
 st.markdown("---")
 
