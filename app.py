@@ -4,25 +4,22 @@ import requests
 from streamlit_folium import st_folium
 import folium
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
-# Configurazione della pagina
-st.set_page_config(page_title="AgriDSS Community", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="AgriDSS Community & Satellite", layout="wide", initial_sidebar_state="expanded")
 
-# --- DATABASE SETUP & GESTIONE ---
+# --- DATABASE SETUP ---
 def init_db():
     conn = sqlite3.connect("community_comments.db")
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS comments 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, author TEXT, text TEXT, crop TEXT, lat REAL, lon REAL)''')
-    
     c.execute("PRAGMA table_info(comments)")
     columns = [col[1] for col in c.fetchall()]
     if 'lat' not in columns:
         c.execute("ALTER TABLE comments ADD COLUMN lat REAL")
     if 'lon' not in columns:
         c.execute("ALTER TABLE comments ADD COLUMN lon REAL")
-        
     conn.commit()
     conn.close()
 
@@ -51,74 +48,163 @@ def get_comments():
     conn.close()
     return df_comments
 
-# --- FUNZIONE METEO PROTETTA DA CACHE (Evita di esaurire i limiti) ---
+# --- API METEO (Con Cache) ---
 @st.cache_data(ttl=3600)
 def fetch_weather(lat, lon):
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max&timezone=Europe/Berlin"
     response = requests.get(url, timeout=5)
     return response.json()
 
-# --- GESTIONE STATO COORDINATE & ANALISI ---
+# --- API COPERNICUS SATELLITE ---
+def get_cdse_token(client_id, client_secret):
+    auth_url = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
+    payload = {
+        "grant_type": "client_credentials",
+        "client_id": client_id,
+        "client_secret": client_secret
+    }
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    try:
+        response = requests.post(auth_url, data=payload, headers=headers, timeout=10)
+        if response.status_code == 200:
+            return response.json().get("access_token")
+    except Exception:
+        pass
+    return None
+
+@st.cache_data(ttl=86400)
+def fetch_satellite_statistics(lat, lon):
+    client_id = "sh-fea07070-5af9-419b-9bcf-9aa06c70b822"
+    client_secret = "ryKBfLw9vwdFlDrGpjcgHkk1T4sRnSSD"
+    
+    token = get_cdse_token(client_id, client_secret)
+    if not token:
+        return None
+        
+    data_fine = datetime.utcnow().strftime("%Y-%m-%dT23:59:59Z")
+    data_inizio = (datetime.utcnow() - timedelta(days=45)).strftime("%Y-%m-%dT00:00:00Z")
+    
+    delta = 0.002
+    bbox = [lon - delta, lat - delta, lon + delta, lat + delta]
+    url_dati = "https://sh.dataspace.copernicus.eu/api/v1/statistics"
+    
+    evalscript = """
+    //VERSION=3
+    function setup() {
+        return {
+            input: ['B04', 'B08', 'B11', 'B03', 'SCL', 'dataMask'],
+            output: [
+                { id: 'ndvi', bands: 1 },
+                { id: 'msavi', bands: 1 },
+                { id: 'ndmi', bands: 1 },
+                { id: 'ndwi', bands: 1 },
+                { id: 'dataMask', bands: 1 }
+            ]
+        };
+    }
+    function evaluatePixel(s) {
+        if ([3, 8, 9, 10, 11].includes(s.SCL)) {
+            return { ndvi: [NaN], msavi: [NaN], ndmi: [NaN], ndwi: [NaN], dataMask: [0] };
+        }
+        let v_ndvi = (s.B08 - s.B04) / (s.B08 + s.B04);
+        let v_msavi = (2 * s.B08 + 1 - Math.sqrt(Math.pow(2 * s.B08 + 1, 2) - 8 * (s.B08 - s.B04))) / 2;
+        let v_ndmi = (s.B08 - s.B11) / (s.B08 + s.B11);
+        let v_ndwi = (s.B03 - s.B08) / (s.B03 + s.B08);
+        return { ndvi: [v_ndvi], msavi: [v_msavi], ndmi: [v_ndmi], ndwi: [v_ndwi], dataMask: [s.dataMask] };
+    }
+    """
+    
+    payload = {
+        "input": {"bounds": {"bbox": bbox}, "data": [{"type": "sentinel-2-l2a"}]},
+        "aggregation": {
+            "timeRange": {"from": data_inizio, "to": data_fine},
+            "aggregationInterval": {"of": "P1D"},
+            "resx": 10, "resy": 10,
+            "evalscript": evalscript
+        },
+        "calculations": {
+            "ndvi": {"statistics": {"default": {"percentiles": {"k": [10.0]}}}},
+            "msavi": {"statistics": {"default": {"percentiles": {"k": [10.0]}}}},
+            "ndmi": {"statistics": {"default": {"percentiles": {"k": [10.0]}}}},
+            "ndwi": {"statistics": {"default": {"percentiles": {"k": [10.0]}}}}
+        }
+    }
+    
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    
+    try:
+        response = requests.post(url_dati, json=payload, headers=headers, timeout=20)
+        if response.status_code == 200:
+            return response.json()
+    except Exception:
+        pass
+    return None
+
+def parse_satellite_json(data):
+    if not data or "output" not in data:
+        return pd.DataFrame()
+    responses = data.get("output", {}).get("responses", [])
+    records = []
+    for resp in responses:
+        interval = resp.get("interval", {})
+        date_from = interval.get("from", "")[:10]
+        outputs = resp.get("outputs", {})
+        
+        def get_mean(key):
+            try:
+                val = outputs.get(key, {}).get("bands", {}).get("B0", {}).get("stats", {}).get("mean")
+                return float(val) if val is not None else None
+            except:
+                return None
+                
+        ndvi = get_mean("ndvi")
+        if ndvi is not None and not pd.isna(ndvi):
+            records.append({
+                "Data": date_from,
+                "NDVI": ndvi,
+                "MSAVI": get_mean("msavi"),
+                "NDMI": get_mean("ndmi"),
+                "NDWI": get_mean("ndwi")
+            })
+    return pd.DataFrame(records)
+
+# --- SESSION STATE ---
 if 'lat' not in st.session_state:
     st.session_state.lat = 43.007721
 if 'lon' not in st.session_state:
     st.session_state.lon = 12.146461
 if 'df_meteo' not in st.session_state:
     st.session_state.df_meteo = None
+if 'df_sat' not in st.session_state:
+    st.session_state.df_sat = None
 
-# --- SIDEBAR: CONFIGURAZIONE & GESTIONE ---
+# --- SIDEBAR ---
 st.sidebar.header("⚙️ Configurazione Campo")
 coltura = st.sidebar.selectbox("Seleziona la Coltura:", ["Oliveto", "Vigneto"])
 
 st.sidebar.markdown("---")
 st.sidebar.header("🗑️ Gestione Dati")
-if st.sidebar.button("Svuota Registro (Elimina Tutti i Messaggi)", type="secondary"):
+if st.sidebar.button("Svuota Registro Community", type="secondary"):
     reset_db()
-    st.sidebar.success("Registro azzerato con successo!")
+    st.sidebar.success("Registro azzerato!")
     st.rerun()
 
-# --- BANNER FAQ RAPIDE ---
-st.markdown("""
-    <div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; border-left: 5px solid #ff4b4b; margin-bottom: 20px;">
-        <h3 style="margin: 0; color: #31333F;">🔍 Aiuto Rapido & Domande Frequenti (FAQ)</h3>
-        <p style="margin: 5px 0 0 0; color: #555;">Hai dubbi in campo? Cerca o seleziona una domanda tipica:</p>
-    </div>
-""", unsafe_allow_html=True)
+st.title("🌾 AgriDSS: Mappa, Meteo, Satellite & Community")
 
-faq_scelta = st.selectbox("Seleziona una domanda frequente:", [
-    "-- Scegli una domanda --",
-    "Posso trattare oggi se domani piove?",
-    "Che faccio se arriva l'ondata di calore a 38°C?",
-    "Come capisco se il vicino ha visto la mosca?"
-])
-
-if faq_scelta == "Posso trattare oggi se domani piove?":
-    st.info("💡 **Risposta DSS:** Se la probabilità di pioggia supera il 60% o ci sono più di 2mm previsti, il sistema sconsiglia il trattamento perché il prodotto verrebbe dilavato.")
-elif faq_scelta == "Che faccio se arriva l'ondata di calore a 38°C?":
-    st.info("💡 **Risposta DSS:** Tieni il trattore in rimessa! Il caldo estremo oltre i 33-34°C blocca la mosca ma rischia di causare gravissime fitotossicità (ustioni) se applichi fitofarmaci.")
-elif faq_scelta == "Come capisco se il vicino ha visto la mosca?":
-    st.info("💡 **Risposta DSS:** Controlla la bacheca e i pin arancioni sulla mappa qui sotto per vedere le ultime segnalazioni geolocalizzate nella tua zona!")
-
-st.title("🌾 AgriDSS: Mappa, Meteo e Community Locale")
-
-# --- MAPPA INTERATTIVA ---
+# --- MAPPA ---
 st.subheader("📍 Mappa Appezzamenti (Clicca sul tuo campo)")
-st.markdown("💡 *Clicca un punto qualsiasi della mappa per spostare la particella verde.*")
-
 m = folium.Map(location=[st.session_state.lat, st.session_state.lon], zoom_start=12)
 
-# Marker Verde della posizione attiva
 folium.Marker(
     [st.session_state.lat, st.session_state.lon],
     popup="<b>Particella Selezionata</b>",
     icon=folium.Icon(color="green", icon="leaf")
 ).add_to(m)
 
-# Caricamento Pin Arancioni della Community
 df_comm_map = get_comments()
 for _, row in df_comm_map.iterrows():
     if pd.notnull(row['lat']) and pd.notnull(row['lon']):
-        popup_text = f"<b>{row['author']}</b> ({row['crop']})<br><i>{row['date']}</i><br>{row['text']}"
+        popup_text = f"<b>{row['author']}</b> ({row['crop']})<br>{row['text']}"
         folium.Marker(
             [row['lat'], row['lon']],
             popup=popup_text,
@@ -134,75 +220,64 @@ if map_data and map_data.get("last_clicked"):
 
 st.success(f"🎯 Particella attiva: Lat {st.session_state.lat:.5f}, Lon {st.session_state.lon:.5f}")
 
-# --- ANALISI METEO DSS (Con cache integrata) ---
-st.subheader("📊 Analisi DSS & Rischio Fitosanitario")
+# --- ANALISI INTEGRATA (METEO + SATELLITE) ---
+st.subheader("📊 Analisi DSS & Monitoraggio Satellitare Sentinel-2")
 
-if st.button("🚀 Esegui Analisi Meteo sul Campo", type="primary"):
-    try:
-        data = fetch_weather(st.session_state.lat, st.session_state.lon)
-        
-        if "daily" in data:
-            daily = data["daily"]
-            df = pd.DataFrame({
+if st.button("🚀 Esegui Analisi Completa (Meteo + Satellite)", type="primary"):
+    with st.spinner("Interrogazione server meteo e Copernicus in corso..."):
+        w_data = fetch_weather(st.session_state.lat, st.session_state.lon)
+        if "daily" in w_data:
+            daily = w_data["daily"]
+            df_m = pd.DataFrame({
                 "Data": daily["time"],
                 "Temp Max (°C)": daily["temperature_2m_max"],
                 "Temp Min (°C)": daily["temperature_2m_min"],
                 "Pioggia (mm)": daily["precipitation_sum"],
                 "Prob. Pioggia (%)": daily["precipitation_probability_max"]
             })
-            
-            stati = []
-            for i, row in df.iterrows():
-                if row["Pioggia (mm)"] > 2:
-                    stati.append("🔴 [ALLERTA] Rischio Pioggia - Evita Trattamenti")
-                elif row["Temp Max (°C)"] > 33:
-                    stati.append("🟡 [ATTENZIONE] Stress Termico / Caldo")
-                else:
-                    stati.append("🟢 [OK] Condizioni Stabili")
-            df["Stato Operativo"] = stati
-            
-            st.session_state.df_meteo = df
+            st.session_state.df_meteo = df_m
+        
+        sat_json = fetch_satellite_statistics(st.session_state.lat, st.session_state.lon)
+        if sat_json:
+            st.session_state.df_sat = parse_satellite_json(sat_json)
         else:
-            st.error(f"⚠️ Errore dal server meteo: `{data}`")
-            
-    except requests.exceptions.Timeout:
-        st.error("⏳ Connessione scaduta: il server meteo ci ha messo troppo a rispondere.")
-    except Exception as e:
-        st.error(f"⚠️ Errore di connessione: {e}")
+            st.session_state.df_sat = pd.DataFrame()
 
-# Mostriamo la tabella se è stata calcolata correttamente
 if st.session_state.df_meteo is not None:
-    st.info(f"📋 Dati meteo attivi per le coordinate: `{st.session_state.lat:.4f}, {st.session_state.lon:.4f}`")
+    st.markdown("### 📋 Dati Meteo Recenti")
     st.dataframe(st.session_state.df_meteo, use_container_width=True)
-else:
-    st.warning("👆 Clicca sul pulsante sopra per caricare l'analisi meteo e di rischio della particella selezionata.")
+
+if st.session_state.df_sat is not None and not st.session_state.df_sat.empty:
+    st.markdown("### 🛰️ Storico Satellitare (Ultimi 45 giorni - Sentinel-2)")
+    st.dataframe(st.session_state.df_sat, use_container_width=True)
+    st.line_chart(st.session_state.df_sat.set_index("Data")[["NDVI", "MSAVI", "NDMI"]])
+elif st.session_state.df_sat is not None:
+    st.warning("⚠️ Nessun dato satellitare valido trovato per quest'area o filtri nuvole attivi.")
 
 st.markdown("---")
 
-# --- SEZIONE COMMUNITY & REGISTRO ---
-st.subheader("👥 Bacheca della Community & Registro Territoriale")
-
+# --- COMMUNITY ---
+st.subheader("👥 Bacheca della Community")
 col1, col2 = st.columns(2)
 
 with col1:
-    st.markdown("**Lascia una segnalazione per i vicini:**")
+    st.markdown("**Lascia una segnalazione:**")
     autore = st.text_input("Tuo Nome / Azienda:")
-    testo_segnalazione = st.text_area("Cosa hai notato nel campo? (es. Mosca vista, Trattamento eseguito):")
-    if st.button("Pubblica Segnalazione"):
+    testo_segnalazione = st.text_area("Segnalazione (es. Mosca vista, Trattamento fatto):")
+    if st.button("Pubblica"):
         if autore and testo_segnalazione:
             add_comment(autore, testo_segnalazione, coltura, st.session_state.lat, st.session_state.lon)
-            st.success("Segnalazione salvata e geolocalizzata con successo!")
+            st.success("Pubblicato!")
             st.rerun()
         else:
-            st.warning("Inserisci nome e testo prima di pubblicare.")
+            st.warning("Compila tutti i campi.")
 
 with col2:
-    st.markdown("**Ultime notizie dai campi della zona:**")
+    st.markdown("**Ultime notizie:**")
     df_comm = get_comments()
     if not df_comm.empty:
-        for index, row in df_comm.iterrows():
-            lat_str = f"📍 {row['lat']:.4f}, {row['lon']:.4f}" if pd.notnull(row['lat']) else ""
-            st.markdown(f"🗓️ *{row['date']}* | **{row['author']}** ({row['crop']}) - {lat_str}\n> {row['text']}")
+        for _, row in df_comm.iterrows():
+            st.markdown(f"🗓️ *{row['date']}* | **{row['author']}** ({row['crop']})\n> {row['text']}")
             st.markdown("---")
     else:
-        st.info("Nessuna segnalazione recente. Sii il primo a scrivere!")
+        st.info("Nessuna segnalazione.")
