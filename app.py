@@ -7,34 +7,69 @@ import sqlite3
 from datetime import datetime
 
 # Configurazione della pagina
-st.set_page_config(page_title="AgriDSS Community", layout="wide")
+st.set_page_config(page_title="AgriDSS Community", layout="wide", initial_sidebar_state="expanded")
 
-# --- DATABASE SETUP (SQLite per i commenti) ---
+# --- DATABASE SETUP & MIGRAZIONE COLONNE ---
 def init_db():
     conn = sqlite3.connect("community_comments.db")
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS comments 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, author TEXT, text TEXT, crop TEXT)''')
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, author TEXT, text TEXT, crop TEXT, lat REAL, lon REAL)''')
+    
+    # Controllo retrocompatibilità se il DB esisteva già senza lat/lon
+    c.execute("PRAGMA table_info(comments)")
+    columns = [col[1] for col in c.fetchall()]
+    if 'lat' not in columns:
+        c.execute("ALTER TABLE comments ADD COLUMN lat REAL")
+    if 'lon' not in columns:
+        c.execute("ALTER TABLE comments ADD COLUMN lon REAL")
+        
     conn.commit()
     conn.close()
 
+def reset_db():
+    conn = sqlite3.connect("community_comments.db")
+    c = conn.cursor()
+    c.execute("DROP TABLE IF EXISTS comments")
+    conn.commit()
+    conn.close()
+    init_db()
+
 init_db()
 
-def add_comment(author, text, crop):
+def add_comment(author, text, crop, lat, lon):
     conn = sqlite3.connect("community_comments.db")
     c = conn.cursor()
     date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    c.execute("INSERT INTO comments (date, author, text, crop) VALUES (?, ?, ?, ?)", (date_str, author, text, crop))
+    c.execute("INSERT INTO comments (date, author, text, crop, lat, lon) VALUES (?, ?, ?, ?, ?, ?)", 
+              (date_str, author, text, crop, lat, lon))
     conn.commit()
     conn.close()
 
 def get_comments():
     conn = sqlite3.connect("community_comments.db")
-    df_comments = pd.read_sql("SELECT date, author, text, crop FROM comments ORDER BY id DESC", conn)
+    df_comments = pd.read_sql("SELECT date, author, text, crop, lat, lon FROM comments ORDER BY id DESC", conn)
     conn.close()
     return df_comments
 
-# --- BANNER STILE GOOGLE / DOMANDE RAPIDE ---
+# --- GESTIONE STATO COORDINATE ---
+if 'lat' not in st.session_state:
+    st.session_state.lat = 43.007721
+if 'lon' not in st.session_state:
+    st.session_state.lon = 12.146461
+
+# --- SIDEBAR: CONFIGURAZIONE & GESTIONE ---
+st.sidebar.header("⚙️ Configurazione Campo")
+coltura = st.sidebar.selectbox("Seleziona la Coltura:", ["Oliveto", "Vigneto"])
+
+st.sidebar.markdown("---")
+st.sidebar.header("🗑️ Gestione Dati")
+if st.sidebar.button("Svuota Registro (Elimina Tutti i Messaggi)", type="secondary"):
+    reset_db()
+    st.sidebar.success("Registro azzerato con successo!")
+    st.rerun()
+
+# --- BANNER FAQ RAPIDE ---
 st.markdown("""
     <div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; border-left: 5px solid #ff4b4b; margin-bottom: 20px;">
         <h3 style="margin: 0; color: #31333F;">🔍 Aiuto Rapido & Domande Frequenti (FAQ)</h3>
@@ -54,33 +89,45 @@ if faq_scelta == "Posso trattare oggi se domani piove?":
 elif faq_scelta == "Che faccio se arriva l'ondata di calore a 38°C?":
     st.info("💡 **Risposta DSS:** Tieni il trattore in rimessa! Il caldo estremo oltre i 33-34°C blocca la mosca ma rischia di causare gravissime fitotossicità (ustioni) se applichi fitofarmaci.")
 elif faq_scelta == "Come capisco se il vicino ha visto la mosca?":
-    st.info("💡 **Risposta DSS:** Controlla la bacheca della community qui sotto per vedere le ultime segnalazioni geolocalizzate nella tua zona!")
+    st.info("💡 **Risposta DSS:** Controlla la bacheca e i pin arancioni sulla mappa qui sotto per vedere le ultime segnalazioni geolocalizzate nella tua zona!")
 
 st.title("🌾 AgriDSS: Mappa, Meteo e Community Locale")
 
-# Selezione della coltura
-coltura = st.sidebar.selectbox("Seleziona la Coltura:", ["Oliveto", "Vigneto"])
-
-# Mappa interattiva
+# --- MAPPA INTERATTIVA ---
 st.subheader("📍 Mappa Appezzamenti (Clicca sul tuo campo)")
-m = folium.Map(location=[43.007721, 12.146461], zoom_start=12)
 
+m = folium.Map(location=[st.session_state.lat, st.session_state.lon], zoom_start=12)
+
+# Marker Verde della posizione attiva
 folium.Marker(
-    [43.007721, 12.146461],
-    popup="Uliveto Panicale (Test)",
+    [st.session_state.lat, st.session_state.lon],
+    popup="<b>Particella Selezionata</b>",
     icon=folium.Icon(color="green", icon="leaf")
 ).add_to(m)
 
+# Caricamento Pin Arancioni della Community
+df_comm_map = get_comments()
+for _, row in df_comm_map.iterrows():
+    if pd.notnull(row['lat']) and pd.notnull(row['lon']):
+        popup_text = f"<b>{row['author']}</b> ({row['crop']})<br><i>{row['date']}</i><br>{row['text']}"
+        folium.Marker(
+            [row['lat'], row['lon']],
+            popup=popup_text,
+            icon=folium.Icon(color="orange", icon="info-sign")
+        ).add_to(m)
+
 map_data = st_folium(m, width=700, height=350)
 
-lat, lon = 43.007721, 12.146461
 if map_data and map_data.get("last_clicked"):
-    lat = map_data["last_clicked"]["lat"]
-    lon = map_data["last_clicked"]["lng"]
-    st.success(f"Coordinate selezionate: Lat {lat:.5f}, Lon {lon:.5f}")
+    st.session_state.lat = map_data["last_clicked"]["lat"]
+    st.session_state.lon = map_data["last_clicked"]["lng"]
+    st.rerun()
 
+st.success(f"🎯 Coordinate selezionate: Lat {st.session_state.lat:.5f}, Lon {st.session_state.lon:.5f}")
+
+# --- ANALISI METEO DSS ---
 if st.button("🚀 Esegui Analisi Meteo sul Campo"):
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max&timezone=Europe/Berlin"
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={st.session_state.lat}&longitude={st.session_state.lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max&timezone=Europe/Berlin"
     response = requests.get(url).json()
     
     if "daily" in response:
@@ -107,8 +154,8 @@ if st.button("🚀 Esegui Analisi Meteo sul Campo"):
 
 st.markdown("---")
 
-# --- SEZIONE COMMUNITY CON DATABASE ---
-st.subheader("👥 Bacheca della Community (Segnalazioni dal Territorio)")
+# --- SEZIONE COMMUNITY & REGISTRO ---
+st.subheader("👥 Bacheca della Community & Registro Territoriale")
 
 col1, col2 = st.columns(2)
 
@@ -118,8 +165,8 @@ with col1:
     testo_segnalazione = st.text_area("Cosa hai notato nel campo? (es. Mosca vista, Trattamento eseguito):")
     if st.button("Pubblica Segnalazione"):
         if autore and testo_segnalazione:
-            add_comment(autore, testo_segnalazione, coltura)
-            st.success("Segnalazione salvata nel database con successo!")
+            add_comment(autore, testo_segnalazione, coltura, st.session_state.lat, st.session_state.lon)
+            st.success("Segnalazione salvata e geolocalizzata con successo!")
             st.rerun()
         else:
             st.warning("Inserisci nome e testo prima di pubblicare.")
@@ -129,7 +176,8 @@ with col2:
     df_comm = get_comments()
     if not df_comm.empty:
         for index, row in df_comm.iterrows():
-            st.markdown(f"🗓️ *{row['date']}* | **{row['author']}** ({row['crop']}):\n> {row['text']}")
+            lat_str = f"📍 {row['lat']:.4f}, {row['lon']:.4f}" if pd.notnull(row['lat']) else ""
+            st.markdown(f"🗓️ *{row['date']}* | **{row['author']}** ({row['crop']}) - {lat_str}\n> {row['text']}")
             st.markdown("---")
     else:
         st.info("Nessuna segnalazione recente. Sii il primo a scrivere!")
