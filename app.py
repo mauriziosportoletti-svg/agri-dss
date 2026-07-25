@@ -51,6 +51,13 @@ def get_comments():
     conn.close()
     return df_comments
 
+# --- FUNZIONE METEO PROTETTA DA CACHE (Evita di esaurire i limiti) ---
+@st.cache_data(ttl=3600)
+def fetch_weather(lat, lon):
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max&timezone=Europe/Berlin"
+    response = requests.get(url, timeout=5)
+    return response.json()
+
 # --- GESTIONE STATO COORDINATE & ANALISI ---
 if 'lat' not in st.session_state:
     st.session_state.lat = 43.007721
@@ -127,15 +134,12 @@ if map_data and map_data.get("last_clicked"):
 
 st.success(f"🎯 Particella attiva: Lat {st.session_state.lat:.5f}, Lon {st.session_state.lon:.5f}")
 
-# --- ANALISI METEO DSS (Con diagnostica errori dettagliata) ---
+# --- ANALISI METEO DSS (Con cache integrata) ---
 st.subheader("📊 Analisi DSS & Rischio Fitosanitario")
 
 if st.button("🚀 Esegui Analisi Meteo sul Campo", type="primary"):
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={st.session_state.lat}&longitude={st.session_state.lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max&timezone=Europe/Berlin"
-    
     try:
-        response = requests.get(url, timeout=5)
-        data = response.json()
+        data = fetch_weather(st.session_state.lat, st.session_state.lon)
         
         if "daily" in data:
             daily = data["daily"]
@@ -159,8 +163,7 @@ if st.button("🚀 Esegui Analisi Meteo sul Campo", type="primary"):
             
             st.session_state.df_meteo = df
         else:
-            # Mostra esattamente cosa ha risposto il server per capire l'errore
-            st.error(f"⚠️ Il server meteo ha restituito questo errore: `{data}`")
+            st.error(f"⚠️ Errore dal server meteo: `{data}`")
             
     except requests.exceptions.Timeout:
         st.error("⏳ Connessione scaduta: il server meteo ci ha messo troppo a rispondere.")
