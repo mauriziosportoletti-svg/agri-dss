@@ -9,12 +9,22 @@ from datetime import datetime
 # Configurazione della pagina
 st.set_page_config(page_title="AgriDSS Community", layout="wide", initial_sidebar_state="expanded")
 
-# --- DATABASE SETUP (SQLite con Lat/Lon) ---
+# --- DATABASE SETUP (Con controllo e aggiornamento automatico colonne) ---
 def init_db():
     conn = sqlite3.connect("community_comments.db")
     c = conn.cursor()
+    # Crea la tabella base se non esiste
     c.execute('''CREATE TABLE IF NOT EXISTS comments 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, author TEXT, text TEXT, crop TEXT, lat REAL, lon REAL)''')
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, author TEXT, text TEXT, crop TEXT)''')
+    
+    # Controlla se esistono le colonne lat e lon, altrimenti le aggiunge al volo
+    c.execute("PRAGMA table_info(comments)")
+    columns = [col[1] for col in c.fetchall()]
+    if 'lat' not in columns:
+        c.execute("ALTER TABLE comments ADD COLUMN lat REAL")
+    if 'lon' not in columns:
+        c.execute("ALTER TABLE comments ADD COLUMN lon REAL")
+        
     conn.commit()
     conn.close()
 
