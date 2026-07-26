@@ -129,7 +129,7 @@ def fetch_weather_advanced(lat, lon):
     return None
 
 
-# --- API SATELLITE (DEBUG MODE) ---
+# --- API SATELLITE ---
 @st.cache_data(ttl=3600)
 def fetch_satellite_statistics(lat, lon):
     client_id = "sh-fea07070-5af9-419b-9bcf-9aa06c70b822"
@@ -186,7 +186,6 @@ def fetch_satellite_statistics(lat, lon):
                 };
             }
             function evaluatePixel(s) {
-                // Se il pixel è una nube/ombra (classi SCL) o non è valido
                 if ([3, 8, 9, 10, 11].includes(s.SCL) || s.dataMask === 0) { 
                     return { ndvi: [NaN], msavi: [NaN], ndmi: [NaN], dataMask: [0] }; 
                 }
@@ -326,7 +325,6 @@ else:
 
 st.sidebar.markdown("---")
 
-# Form Aggiunta Campo
 num_campi = len(fields_df)
 st.sidebar.caption(
     f"Campi salvati: **{num_campi}/{MAX_CAMPI_ABBONAMENTO}** (Piano Base)"
@@ -377,6 +375,18 @@ sat_json = fetch_satellite_statistics(
 )
 df_sat = parse_satellite_json(sat_json)
 
+# Prepariamo la tabella meteo (serve sia sotto che per l'export)
+df_meteo = pd.DataFrame()
+if w_data and "daily" in w_data:
+    d = w_data["daily"]
+    df_meteo = pd.DataFrame({
+        "Data": d["time"],
+        "Temp Max (°C)": d["temperature_2m_max"],
+        "Temp Min (°C)": d["temperature_2m_min"],
+        "Pioggia (mm)": d["precipitation_sum"],
+        "ET0 (mm)": d["et0_fao_evapotranspiration"],
+    })
+
 # --- METRIC CARDS ---
 col1, col2, col3 = st.columns(3)
 
@@ -414,14 +424,12 @@ m = folium.Map(
     zoom_start=13,
 )
 
-# Marker Campo Attivo
 folium.Marker(
     [st.session_state.active_lat, st.session_state.active_lon],
     popup=f"Campo Attivo: {st.session_state.active_field_name}",
     icon=folium.Icon(color="green", icon="leaf"),
 ).add_to(m)
 
-# Marker Cliccato
 if (
     st.session_state.clicked_lat != st.session_state.active_lat
     or st.session_state.clicked_lon != st.session_state.active_lon
@@ -432,7 +440,6 @@ if (
         icon=folium.Icon(color="orange", icon="info-sign"),
     ).add_to(m)
 
-# Allarmi
 alerts_df = get_alerts()
 if not alerts_df.empty:
     for _, alert in alerts_df.iterrows():
@@ -484,7 +491,7 @@ with st.expander("📢 Invia una Segnalazione Anonima nella zona"):
 st.markdown("---")
 
 # --- TABELLE E DATI ---
-st.subheader("📊 Analisi Dettagliata")
+st.subheader("📊 Analisi Dettagliata & Storico")
 t_sat, t_meteo = st.tabs(["🛰️ Satellite Sentinel-2", "☀️ Meteo & Suolo"])
 
 with t_sat:
@@ -493,21 +500,88 @@ with t_sat:
         st.line_chart(df_sat.set_index("Data")[["NDVI", "MSAVI", "NDMI"]])
 
 with t_meteo:
-    if w_data and "daily" in w_data:
-        d = w_data["daily"]
-        df_m = pd.DataFrame({
-            "Data": d["time"],
-            "Temp Max (°C)": d["temperature_2m_max"],
-            "Temp Min (°C)": d["temperature_2m_min"],
-            "Pioggia (mm)": d["precipitation_sum"],
-            "ET0 (mm)": d["et0_fao_evapotranspiration"],
-        })
-        st.dataframe(df_m, use_container_width=True, hide_index=True)
+    if not df_meteo.empty:
+        st.dataframe(df_meteo, use_container_width=True, hide_index=True)
+
+# --- NUOVA SEZIONE: ESPORTAZIONE UNIFICATA REPORT (METEO + SATELLITE) ---
+st.markdown("#### 📥 Esporta Report Storico (Meteo + Satellite)")
+exp_col1, exp_col2 = st.columns(2)
+
+# 1. GENERAZIONE TABELLONE EXCEL / CSV UNIFICATO
+# Uniamo i dati su base data
+if not df_sat.empty or not df_meteo.empty:
+    df_combined = pd.merge(df_meteo, df_sat, on="Data", how="outer").sort_values(
+        by="Data", ascending=False
+    )
+    csv_report = df_combined.to_csv(index=False).encode("utf-8")
+
+    exp_col1.download_button(
+        label="📊 Scarica Tabellone Completo CSV (Excel)",
+        data=csv_report,
+        file_name=f"report_meteo_sat_{st.session_state.active_field_name}.csv",
+        mime="text/csv",
+    )
+
+# 2. GENERAZIONE REPORT HTML / PDF IMPAGINATO BENISSIMO
+html_sat = (
+    df_sat.to_html(index=False, classes="styled-table")
+    if not df_sat.empty
+    else "<p>Nessun dato satellitare disponibile</p>"
+)
+html_meteo = (
+    df_meteo.to_html(index=False, classes="styled-table")
+    if not df_meteo.empty
+    else "<p>Nessun dato meteo disponibile</p>"
+)
+
+report_html = f"""
+<html>
+<head>
+    <title>Report Agronomico - {st.session_state.active_field_name}</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 30px; color: #333; }}
+        h1 {{ color: #2e7d32; border-bottom: 2px solid #2e7d32; padding-bottom: 5px; }}
+        h2 {{ color: #1b5e20; margin-top: 25px; }}
+        .info-box {{ background-color: #f1f8e9; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
+        .styled-table {{ border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 14px; }}
+        .styled-table th, .styled-table td {{ border: 1px solid #ddd; padding: 8px 12px; text-align: left; }}
+        .styled-table th {{ background-color: #4caf50; color: white; }}
+        .styled-table tr:nth-child(even) {{ background-color: #f9f9f9; }}
+        .footer {{ margin-top: 40px; font-size: 11px; text-align: center; color: #777; border-top: 1px solid #ccc; padding-top: 10px; }}
+    </style>
+</head>
+<body>
+    <h1>🌾 Report Agronomico Integrato</h1>
+    <div class="info-box">
+        <p><b>Campo:</b> {st.session_state.active_field_name}</p>
+        <p><b>Coordinate:</b> Lat {st.session_state.active_lat:.5f}, Lon {st.session_state.active_lon:.5f}</p>
+        <p><b>Data Report:</b> {datetime.now().strftime('%d/%m/%Y %H:%M')}</p>
+    </div>
+
+    <h2>🛰️ Dati Satellitari (Sentinel-2)</h2>
+    {html_sat}
+
+    <h2>☀️ Storico Meteo</h2>
+    {html_meteo}
+
+    <div class="footer">
+        Generato automaticamente da AgriDSS - Sistema Decisionale per l'Agricoltura
+    </div>
+</body>
+</html>
+"""
+
+exp_col2.download_button(
+    label="📄 Scarica Report PDF / Stampabile",
+    data=report_html,
+    file_name=f"report_integrato_{st.session_state.active_field_name}.html",
+    mime="text/html",
+)
 
 st.markdown("---")
 
 # --- QUADERNO DI CAMPAGNA ---
-st.subheader("📋 Registro Trattamenti & Esportazione PDF/CSV")
+st.subheader("📋 Registro Trattamenti & Esportazione")
 
 col_form, col_table = st.columns([1, 1.2])
 
@@ -539,7 +613,7 @@ with col_table:
     if not treatments_df.empty:
         st.dataframe(treatments_df, use_container_width=True, hide_index=True)
 
-        st.markdown("###### 📥 Esporta Registro")
+        st.markdown("###### 📥 Esporta Registro Trattamenti")
         c_exp1, c_exp2 = st.columns(2)
 
         csv_data = treatments_df.to_csv(index=False).encode("utf-8")
