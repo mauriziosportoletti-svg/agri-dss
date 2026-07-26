@@ -176,16 +176,25 @@ def fetch_satellite_statistics(lat, lon):
             //VERSION=3
             function setup() {
                 return {
-                    input: ['B04', 'B08', 'B11', 'B03', 'SCL'],
-                    output: [{ id: 'ndvi', bands: 1 }, { id: 'msavi', bands: 1 }, { id: 'ndmi', bands: 1 }]
+                    input: ['B04', 'B08', 'B11', 'B03', 'SCL', 'dataMask'],
+                    output: [
+                        { id: 'ndvi', bands: 1 }, 
+                        { id: 'msavi', bands: 1 }, 
+                        { id: 'ndmi', bands: 1 },
+                        { id: 'dataMask', bands: 1 }
+                    ]
                 };
             }
             function evaluatePixel(s) {
-                if ([3, 8, 9, 10, 11].includes(s.SCL)) { return { ndvi: [NaN], msavi: [NaN], ndmi: [NaN] }; }
+                // Se il pixel è una nube/ombra (classi SCL) o non è valido
+                if ([3, 8, 9, 10, 11].includes(s.SCL) || s.dataMask === 0) { 
+                    return { ndvi: [NaN], msavi: [NaN], ndmi: [NaN], dataMask: [0] }; 
+                }
                 return {
                     ndvi: [(s.B08 - s.B04) / (s.B08 + s.B04)],
                     msavi: [(2 * s.B08 + 1 - Math.sqrt(Math.pow(2 * s.B08 + 1, 2) - 8 * (s.B08 - s.B04))) / 2],
-                    ndmi: [(s.B08 - s.B11) / (s.B08 + s.B11)]
+                    ndmi: [(s.B08 - s.B11) / (s.B08 + s.B11)],
+                    dataMask: [s.dataMask]
                 };
             }
             """,
