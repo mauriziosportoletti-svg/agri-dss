@@ -6,19 +6,29 @@ import folium
 import sqlite3
 from datetime import datetime, timedelta
 
+# --- 1. CONFIGURAZIONE PAGINA & CSS "WHITE-LABEL" ---
 st.set_page_config(page_title="AgriDSS - Gestione Campi & Allarmi", layout="wide", initial_sidebar_state="expanded")
+
+# Iniezione CSS per nascondere componenti nativi Streamlit (Menu, Footer, Status/Stop)
+hide_streamlit_style = """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    div[data-testid="stStatusWidget"] {visibility: hidden;}
+    .block-container {padding-top: 1.5rem; padding-bottom: 1.5rem;}
+    </style>
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 # --- DATABASE SETUP ---
 def init_db():
     conn = sqlite3.connect("agri_dss.db")
     c = conn.cursor()
-    # Tabella Registro Trattamenti / Note
     c.execute('''CREATE TABLE IF NOT EXISTS treatments 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, treatment_date TEXT, operator TEXT, field_name TEXT, text TEXT, lat REAL, lon REAL)''')
-    # Tabella Segnalazioni Anonime (Waze Agricolo)
     c.execute('''CREATE TABLE IF NOT EXISTS alerts 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, alert_type TEXT, description TEXT, lat REAL, lon REAL)''')
-    # Tabella Anagrafica Campi
     c.execute('''CREATE TABLE IF NOT EXISTS fields 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, crop TEXT, lat REAL, lon REAL)''')
     conn.commit()
@@ -44,7 +54,7 @@ def add_treatment(t_date, operator, field_name, text, lat, lon):
     conn = sqlite3.connect("agri_dss.db")
     c = conn.cursor()
     c.execute("INSERT INTO treatments (treatment_date, operator, field_name, text, lat, lon) VALUES (?, ?, ?, ?, ?, ?)", 
-              (t_date, operator, text, field_name, lat, lon))
+              (t_date, operator, field_name, text, lat, lon))
     conn.commit()
     conn.close()
 
@@ -69,7 +79,7 @@ def get_alerts():
     conn.close()
     return df
 
-# --- API METEO AVANZATO (Con Umidità Aria e Suolo) ---
+# --- 2. API METEO CON CACHE AGGRESSIVA ---
 @st.cache_data(ttl=3600)
 def fetch_weather_advanced(lat, lon):
     url = (
@@ -88,7 +98,8 @@ def fetch_weather_advanced(lat, lon):
         pass
     return None
 
-# --- API SATELLITE ---
+# --- 2. API SATELLITE CON CACHE AGGRESSIVA ---
+@st.cache_data(ttl=86400)
 def get_cdse_token(client_id, client_secret):
     auth_url = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
     payload = {"grant_type": "client_credentials", "client_id": client_id, "client_secret": client_secret}
@@ -190,7 +201,7 @@ def parse_satellite_json(data):
             })
     df = pd.DataFrame(records)
     if not df.empty: 
-        df = df.sort_values(by="Data", ascending=True)
+        df = df.sort_values(by="Data", ascending=False)
     return df
 
 # --- SESSION STATE ---
@@ -228,19 +239,44 @@ if st.sidebar.button("💾 Salva Campo"):
 
 # --- MAIN PAGE ---
 st.title("🌾 AgriDSS: Monitoraggio & Allarmi Territoriali")
-st.info(f"📍 **Campo Selezionato**: {st.session_state.current_field} | **Lat**: {st.session_state.lat:.5f} | **Lon**: {st.session_state.lon:.5f}")
+st.caption(f"📍 **Campo Selezionato**: {st.session_state.current_field} | **Lat**: {st.session_state.lat:.5f} | **Lon**: {st.session_state.lon:.5f}")
+
+# Pre-fetch silenzioso dei dati per popolare sia le schede in evidenza che le tabelle sottostanti
+w_data = fetch_weather_advanced(st.session_state.lat, st.session_state.lon)
+sat_json = fetch_satellite_statistics(st.session_state.lat, st.session_state.lon)
+df_sat = parse_satellite_json(sat_json)
+
+# --- 3. BLOCCHI SINTETICI IN EVIDENZA (METRIC CARDS) ---
+col_m1, col_m2, col_m3 = st.columns(3)
+
+# 1. Metric Card NDVI
+last_ndvi = df_sat["NDVI"].iloc[0] if not df_sat.empty else None
+ndvi_val_str = f"{last_ndvi:.2f}" if last_ndvi is not None else "N/D"
+col_m1.metric(label="🛰️ Indice Vigore (NDVI)", value=ndvi_val_str, delta="Ottimo" if last_ndvi and last_ndvi > 0.5 else "Nella media")
+
+# 2. Metric Card Rischio Fitosanitario (Calcolo Euristico base su temp/umidità)
+risk_label = "BASSO 🟢"
+if w_data and "daily" in w_data:
+    avg_tmax = sum(w_data["daily"]["temperature_2m_max"][:3]) / 3
+    if avg_tmax > 22:
+        risk_label = "MEDIO 🟡"
+col_m2.metric(label="🛡️ Rischio Fitosanitario", value=risk_label)
+
+# 3. Metric Card Pioggia Cumulata 7 giorni
+rain_sum = sum(w_data["daily"]["precipitation_sum"][:7]) if w_data and "daily" in w_data else 0.0
+col_m3.metric(label="🌧️ Pioggia Ultimi 7gg", value=f"{rain_sum:.1f} mm")
+
+st.markdown("---")
 
 # --- MAPPA INTERATTIVA CON SEGNALAZIONI ---
 m = folium.Map(location=[st.session_state.lat, st.session_state.lon], zoom_start=13)
 
-# Marker del campo attivo (Verde)
 folium.Marker(
     [st.session_state.lat, st.session_state.lon], 
     popup=st.session_state.current_field, 
     icon=folium.Icon(color="green", icon="leaf")
 ).add_to(m)
 
-# Marker delle Segnalazioni Anonime (Rosso)
 alerts_df = get_alerts()
 if not alerts_df.empty:
     for idx, alert in alerts_df.iterrows():
@@ -276,48 +312,70 @@ with st.expander("🚨 Invia una Segnalazione Anonima (Mosca, Peronospora, Gelat
 
 st.markdown("---")
 
-# --- BOTTONE ANALISI METEO & SATELLITE ---
-if st.button("🚀 Scarica Dati Meteo Completi & Satellite", type="secondary"):
-    with st.spinner("Elaborazione dati meteo e indici satellitari in corso..."):
-        
-        # 1. METEO AVANZATO
-        w_data = fetch_weather_advanced(st.session_state.lat, st.session_state.lon)
-        if w_data and "daily" in w_data:
-            d = w_data["daily"]
-            
-            # Calcolo media Umidità Oraria per portarla a livello giornaliero
-            df_hourly = pd.DataFrame(w_data["hourly"])
-            df_hourly['date'] = df_hourly['time'].str[:10]
-            daily_humidity = df_hourly.groupby('date')['relative_humidity_2m'].mean().round(1).tolist()
-            daily_soil_m = df_hourly.groupby('date')['soil_moisture_0_to_7cm'].mean().round(3).tolist()
+# --- 4. GRAFICA MODERNA PER ANALISI METEO & SATELLITE (COLUMN CONFIG) ---
+st.subheader("📊 Analisi Satellitare & Previsioni Meteo Avanzate")
 
-            df_m = pd.DataFrame({
-                "Data": d["time"],
-                "Temp Max (°C)": d["temperature_2m_max"],
-                "Temp Min (°C)": d["temperature_2m_min"],
-                "Umidità Aria Media (%)": daily_humidity[:len(d["time"])],
-                "Umidità Suolo 0-7cm": daily_soil_m[:len(d["time"])],
-                "Pioggia (mm)": d["precipitation_sum"],
-                "Prob. Pioggia (%)": d.get("precipitation_probability_max", [None]*len(d["time"])),
-                "Evapotraspirazione ET0 (mm)": d["et0_fao_evapotranspiration"],
-                "Vento Max (km/h)": d["wind_speed_10m_max"]
-            })
-            st.markdown("### ☀️ Meteo Avanzato Completo (Storico 7gg + Previsione 7gg)")
-            st.dataframe(df_m, use_container_width=True)
-        else:
-            st.error("Impossibile recuperare i dati meteo.")
+tab_sat, tab_weather = st.tabs(["🛰️ Satellite Sentinel-2", "☀️ Meteo & Suolo"])
 
-        # 2. SATELLITE
-        sat_json = fetch_satellite_statistics(st.session_state.lat, st.session_state.lon)
-        df_sat = parse_satellite_json(sat_json)
-        if not df_sat.empty:
-            st.markdown("### 🛰️ Indici Satellitari Sentinel-2 (Ultimi 45 giorni)")
-            st.dataframe(df_sat, use_container_width=True)
-            st.line_chart(df_sat.set_index("Data")[["NDVI", "MSAVI", "NDMI"]])
-        else:
-            st.warning("Nessun passaggio satellitare senza nuvole trovato di recente.")
+with tab_sat:
+    if not df_sat.empty:
+        # Configurazione moderna delle colonne della tabella dati
+        st.dataframe(
+            df_sat,
+            use_container_width=True,
+            column_config={
+                "Data": st.column_config.DateColumn("Data Rilevamento", format="DD/MM/YYYY"),
+                "NDVI": st.column_config.ProgressColumn("Vigore Vegetativo (NDVI)", min_value=0, max_value=1, format="%.2f"),
+                "MSAVI": st.column_config.ProgressColumn("Indice Suolo/Chioma (MSAVI)", min_value=0, max_value=1, format="%.2f"),
+                "NDMI": st.column_config.ProgressColumn("Stress Idrico (NDMI)", min_value=-1, max_value=1, format="%.2f"),
+                "NDWI": st.column_config.NumberColumn("Contenuto Acqua (NDWI)", format="%.3f")
+            },
+            hide_index=True
+        )
+        st.line_chart(df_sat.set_index("Data")[["NDVI", "MSAVI", "NDMI"]])
+    else:
+        st.warning("Nessun passaggio satellitare senza nuvole trovato di recente.")
 
-# --- SEZIONE REGISTRO TRATTAMENTI CON DATA PERSONALIZZABILE ---
+with tab_weather:
+    if w_data and "daily" in w_data:
+        d = w_data["daily"]
+        df_hourly = pd.DataFrame(w_data["hourly"])
+        df_hourly['date'] = df_hourly['time'].str[:10]
+        daily_humidity = df_hourly.groupby('date')['relative_humidity_2m'].mean().round(1).tolist()
+        daily_soil_m = df_hourly.groupby('date')['soil_moisture_0_to_7cm'].mean().round(3).tolist()
+
+        df_m = pd.DataFrame({
+            "Data": d["time"],
+            "Temp Max": d["temperature_2m_max"],
+            "Temp Min": d["temperature_2m_min"],
+            "Umidità Aria": daily_humidity[:len(d["time"])],
+            "Umidità Suolo": daily_soil_m[:len(d["time"])],
+            "Pioggia": d["precipitation_sum"],
+            "Prob. Pioggia": d.get("precipitation_probability_max", [0]*len(d["time"])),
+            "Evapotraspirazione ET0": d["et0_fao_evapotranspiration"],
+            "Vento Max": d["wind_speed_10m_max"]
+        })
+
+        st.dataframe(
+            df_m,
+            use_container_width=True,
+            column_config={
+                "Data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
+                "Temp Max": st.column_config.NumberColumn("Temp Max", format="%.1f °C"),
+                "Temp Min": st.column_config.NumberColumn("Temp Min", format="%.1f °C"),
+                "Umidità Aria": st.column_config.NumberColumn("Umidità Aria", format="%.1f %%"),
+                "Umidità Suolo": st.column_config.NumberColumn("Umidità Suolo", format="%.3f m³/m³"),
+                "Pioggia": st.column_config.NumberColumn("Pioggia", format="%.1f mm"),
+                "Prob. Pioggia": st.column_config.NumberColumn("Prob. Pioggia", format="%d %%"),
+                "Evapotraspirazione ET0": st.column_config.NumberColumn("Evapotraspirazione ET0", format="%.1f mm"),
+                "Vento Max": st.column_config.NumberColumn("Vento Max", format="%.1f km/h")
+            },
+            hide_index=True
+        )
+    else:
+        st.error("Impossibile recuperare i dati meteo.")
+
+# --- SEZIONE REGISTRO TRATTAMENTI ---
 st.markdown("---")
 st.subheader("📋 Registro Trattamenti & Quaderno di Campagna")
 
@@ -341,6 +399,6 @@ with col_hist:
     st.markdown("##### 📖 Storico Trattamenti Effettuati")
     treat_df = get_treatments()
     if not treat_df.empty:
-        st.dataframe(treat_df, use_container_width=True)
+        st.dataframe(treat_df, use_container_width=True, hide_index=True)
     else:
         st.info("Nessun trattamento ancora salvato.")
