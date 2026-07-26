@@ -6,15 +6,18 @@ import folium
 import sqlite3
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="AgriDSS - Gestione Campi & Satellite", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="AgriDSS - Gestione Campi & Allarmi", layout="wide", initial_sidebar_state="expanded")
 
-# --- DATABASE SETUP (Gestione Campi & Commenti) ---
+# --- DATABASE SETUP ---
 def init_db():
     conn = sqlite3.connect("agri_dss.db")
     c = conn.cursor()
-    # Tabella Commenti
-    c.execute('''CREATE TABLE IF NOT EXISTS comments 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, author TEXT, text TEXT, crop TEXT, lat REAL, lon REAL)''')
+    # Tabella Registro Trattamenti / Note
+    c.execute('''CREATE TABLE IF NOT EXISTS treatments 
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, treatment_date TEXT, operator TEXT, field_name TEXT, text TEXT, lat REAL, lon REAL)''')
+    # Tabella Segnalazioni Anonime (Waze Agricolo)
+    c.execute('''CREATE TABLE IF NOT EXISTS alerts 
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, alert_type TEXT, description TEXT, lat REAL, lon REAL)''')
     # Tabella Anagrafica Campi
     c.execute('''CREATE TABLE IF NOT EXISTS fields 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, crop TEXT, lat REAL, lon REAL)''')
@@ -23,7 +26,7 @@ def init_db():
 
 init_db()
 
-# Funzioni Anagrafica Campi
+# --- FUNZIONI DATABASE ---
 def save_field(name, crop, lat, lon):
     conn = sqlite3.connect("agri_dss.db")
     c = conn.cursor()
@@ -37,30 +40,43 @@ def get_fields():
     conn.close()
     return df
 
-# Funzioni Community / Registro Attività
-def add_comment(author, text, crop, lat, lon):
+def add_treatment(t_date, operator, field_name, text, lat, lon):
     conn = sqlite3.connect("agri_dss.db")
     c = conn.cursor()
-    date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    c.execute("INSERT INTO comments (date, author, text, crop, lat, lon) VALUES (?, ?, ?, ?, ?, ?)", 
-              (date_str, author, text, crop, lat, lon))
+    c.execute("INSERT INTO treatments (treatment_date, operator, field_name, text, lat, lon) VALUES (?, ?, ?, ?, ?, ?)", 
+              (t_date, operator, text, field_name, lat, lon))
     conn.commit()
     conn.close()
 
-def get_comments():
+def get_treatments():
     conn = sqlite3.connect("agri_dss.db")
-    df = pd.read_sql("SELECT date, author, text, crop, lat, lon FROM comments ORDER BY id DESC", conn)
+    df = pd.read_sql("SELECT treatment_date as 'Data Trattamento', field_name as 'Campo', operator as 'Operatore', text as 'Dettaglio Trattamento' FROM treatments ORDER BY id DESC", conn)
     conn.close()
     return df
 
-# --- API METEO AVANZATO (Storico 7 giorni passati + 7 giorni previsione) ---
+def add_alert(alert_type, description, lat, lon):
+    conn = sqlite3.connect("agri_dss.db")
+    c = conn.cursor()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    c.execute("INSERT INTO alerts (created_at, alert_type, description, lat, lon) VALUES (?, ?, ?, ?, ?)", 
+              (now_str, alert_type, description, lat, lon))
+    conn.commit()
+    conn.close()
+
+def get_alerts():
+    conn = sqlite3.connect("agri_dss.db")
+    df = pd.read_sql("SELECT created_at, alert_type, description, lat, lon FROM alerts ORDER BY id DESC", conn)
+    conn.close()
+    return df
+
+# --- API METEO AVANZATO (Con Umidità Aria e Suolo) ---
 @st.cache_data(ttl=3600)
 def fetch_weather_advanced(lat, lon):
     url = (
         f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
         f"&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,"
         f"et0_fao_evapotranspiration,wind_speed_10m_max,wind_direction_10m_dominant"
-        f"&hourly=soil_moisture_0_to_7cm,relative_humidity_2m"
+        f"&hourly=relative_humidity_2m,soil_moisture_0_to_7cm"
         f"&past_days=7"
         f"&timezone=Europe/Berlin"
     )
@@ -72,7 +88,7 @@ def fetch_weather_advanced(lat, lon):
         pass
     return None
 
-# --- API COPERNICUS SATELLITE ---
+# --- API SATELLITE ---
 def get_cdse_token(client_id, client_secret):
     auth_url = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
     payload = {"grant_type": "client_credentials", "client_id": client_id, "client_secret": client_secret}
@@ -92,7 +108,6 @@ def fetch_satellite_statistics(lat, lon):
     
     token = get_cdse_token(client_id, client_secret)
     if not token:
-        st.error("Errore autenticazione Copernicus.")
         return None
         
     data_fine = datetime.utcnow().strftime("%Y-%m-%dT23:59:59Z")
@@ -183,15 +198,15 @@ if 'lat' not in st.session_state: st.session_state.lat = 43.007721
 if 'lon' not in st.session_state: st.session_state.lon = 12.146461
 if 'current_field' not in st.session_state: st.session_state.current_field = "Posizione Iniziale"
 
-# --- SIDEBAR (ANAGRAFICA CAMPI) ---
+# --- SIDEBAR: GESTIONE CAMPI ---
 st.sidebar.title("🏡 I Miei Campi")
 
 fields_df = get_fields()
 if not fields_df.empty:
-    field_names = ["-- Seleziona un Campo Saved --"] + fields_df["name"].tolist()
-    selected_option = st.sidebar.selectbox("Carica Campo Salvato:", field_names)
+    field_names = ["-- Seleziona Campo Salvato --"] + fields_df["name"].tolist()
+    selected_option = st.sidebar.selectbox("Carica un tuo Campo:", field_names)
     
-    if selected_option != "-- Seleziona un Campo Saved --":
+    if selected_option != "-- Seleziona Campo Salvato --":
         row = fields_df[fields_df["name"] == selected_option].iloc[0]
         st.session_state.lat = row["lat"]
         st.session_state.lon = row["lon"]
@@ -200,7 +215,7 @@ if not fields_df.empty:
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("➕ Salva Posizione Attuale")
-new_field_name = st.sidebar.text_input("Nome del Campo (es. Oliveto Casa):")
+new_field_name = st.sidebar.text_input("Nome del Campo:")
 coltura_sel = st.sidebar.selectbox("Coltura:", ["Oliveto", "Vigneto", "Seminativo", "Altro"])
 
 if st.sidebar.button("💾 Salva Campo"):
@@ -209,46 +224,85 @@ if st.sidebar.button("💾 Salva Campo"):
         st.sidebar.success(f"Campo '{new_field_name}' salvato!")
         st.rerun()
     else:
-        st.sidebar.warning("Inserisci un nome prima di salvare.")
+        st.sidebar.warning("Inserisci un nome.")
 
 # --- MAIN PAGE ---
-st.title("🌾 AgriDSS: Mappa, Meteo Completo & Satellite")
-st.info(f"📍 **Campo Attivo**: {st.session_state.current_field} | **Lat**: {st.session_state.lat:.5f} | **Lon**: {st.session_state.lon:.5f}")
+st.title("🌾 AgriDSS: Monitoraggio & Allarmi Territoriali")
+st.info(f"📍 **Campo Selezionato**: {st.session_state.current_field} | **Lat**: {st.session_state.lat:.5f} | **Lon**: {st.session_state.lon:.5f}")
 
-# --- MAPPA INTERATTIVA ---
-m = folium.Map(location=[st.session_state.lat, st.session_state.lon], zoom_start=14)
+# --- MAPPA INTERATTIVA CON SEGNALAZIONI ---
+m = folium.Map(location=[st.session_state.lat, st.session_state.lon], zoom_start=13)
+
+# Marker del campo attivo (Verde)
 folium.Marker(
     [st.session_state.lat, st.session_state.lon], 
     popup=st.session_state.current_field, 
     icon=folium.Icon(color="green", icon="leaf")
 ).add_to(m)
 
-map_data = st_folium(m, width=700, height=300)
+# Marker delle Segnalazioni Anonime (Rosso)
+alerts_df = get_alerts()
+if not alerts_df.empty:
+    for idx, alert in alerts_df.iterrows():
+        popup_html = f"<b>⚠️ {alert['alert_type']}</b><br>{alert['description']}<br><i>{alert['created_at']}</i>"
+        folium.Marker(
+            [alert["lat"], alert["lon"]],
+            popup=popup_html,
+            icon=folium.Icon(color="red", icon="warning", prefix="fa")
+        ).add_to(m)
+
+map_data = st_folium(m, width=700, height=350)
 if map_data and map_data.get("last_clicked"):
     st.session_state.lat = map_data["last_clicked"]["lat"]
     st.session_state.lon = map_data["last_clicked"]["lng"]
-    st.session_state.current_field = "Posizione Selezionata su Mappa"
+    st.session_state.current_field = "Punto cliccato su Mappa"
     st.rerun()
 
-# --- BOTTONE ANALISI ---
-if st.button("🚀 Scarica Meteo Completo & Satellite", type="primary"):
-    with st.spinner("Scaricamento dati meteo (storico + previsioni) e satellite in corso..."):
+# --- SEZIONE SEGNALAZIONE ANONIMA SULLA MAPPA ---
+with st.expander("🚨 Invia una Segnalazione Anonima (Mosca, Peronospora, Gelata, ecc.)"):
+    st.caption("Fai prima click sulla mappa nel punto esatto del problema, poi compila il modulo qui sotto:")
+    alert_type = st.selectbox("Tipo di Problema/Avvistamento:", [
+        "Avvistamento Mosca Olearia", 
+        "Attacco Peronospora / Oidio", 
+        "Siccità Severa / Stress Idrico", 
+        "Danni da Gelata / Grandine", 
+        "Altra Parassitosi / Anomalia"
+    ])
+    alert_desc = st.text_input("Dettagli aggiuntivi (es. Presenza 5% catture in trappola):")
+    if st.button("📢 Invia Segnalazione Anonima", type="primary"):
+        add_alert(alert_type, alert_desc or "Nessun dettaglio", st.session_state.lat, st.session_state.lon)
+        st.success("Segnalazione pubblicata sulla mappa per tutti gli agricoltori della zona!")
+        st.rerun()
+
+st.markdown("---")
+
+# --- BOTTONE ANALISI METEO & SATELLITE ---
+if st.button("🚀 Scarica Dati Meteo Completi & Satellite", type="secondary"):
+    with st.spinner("Elaborazione dati meteo e indici satellitari in corso..."):
         
-        # 1. METEO
+        # 1. METEO AVANZATO
         w_data = fetch_weather_advanced(st.session_state.lat, st.session_state.lon)
         if w_data and "daily" in w_data:
             d = w_data["daily"]
+            
+            # Calcolo media Umidità Oraria per portarla a livello giornaliero
+            df_hourly = pd.DataFrame(w_data["hourly"])
+            df_hourly['date'] = df_hourly['time'].str[:10]
+            daily_humidity = df_hourly.groupby('date')['relative_humidity_2m'].mean().round(1).tolist()
+            daily_soil_m = df_hourly.groupby('date')['soil_moisture_0_to_7cm'].mean().round(3).tolist()
+
             df_m = pd.DataFrame({
                 "Data": d["time"],
                 "Temp Max (°C)": d["temperature_2m_max"],
                 "Temp Min (°C)": d["temperature_2m_min"],
+                "Umidità Aria Media (%)": daily_humidity[:len(d["time"])],
+                "Umidità Suolo 0-7cm": daily_soil_m[:len(d["time"])],
                 "Pioggia (mm)": d["precipitation_sum"],
                 "Prob. Pioggia (%)": d.get("precipitation_probability_max", [None]*len(d["time"])),
                 "Evapotraspirazione ET0 (mm)": d["et0_fao_evapotranspiration"],
-                "Vento Max (km/h)": d["wind_speed_10m_max"],
-                "Direz. Vento (°)": d["wind_direction_10m_dominant"]
+                "Vento Max (km/h)": d["wind_speed_10m_max"]
             })
-            st.markdown("### ☀️ Meteo Avanzato (Storico 7gg + Previsione 7gg)")
+            st.markdown("### ☀️ Meteo Avanzato Completo (Storico 7gg + Previsione 7gg)")
             st.dataframe(df_m, use_container_width=True)
         else:
             st.error("Impossibile recuperare i dati meteo.")
@@ -261,22 +315,32 @@ if st.button("🚀 Scarica Meteo Completo & Satellite", type="primary"):
             st.dataframe(df_sat, use_container_width=True)
             st.line_chart(df_sat.set_index("Data")[["NDVI", "MSAVI", "NDMI"]])
         else:
-            st.warning("Nessun passaggio satellitare privo di nuvole trovato negli ultimi 45 giorni per questa posizione.")
+            st.warning("Nessun passaggio satellitare senza nuvole trovato di recente.")
 
-# --- NOTE & REGISTRO ATTIVITÀ ---
+# --- SEZIONE REGISTRO TRATTAMENTI CON DATA PERSONALIZZABILE ---
 st.markdown("---")
-st.subheader("📝 Registro Note & Trattamenti Campo")
+st.subheader("📋 Registro Trattamenti & Quaderno di Campagna")
 
-with st.expander("➕ Aggiungi Nota per questo campo"):
-    author = st.text_input("Nome/Operatore:")
-    note_text = st.text_area("Note o Trattamento Effettuato (es. Rameico effettuato oggi):")
-    if st.button("Salva Nota"):
-        if note_text:
-            add_comment(author or "Anonimo", note_text, coltura_sel, st.session_state.lat, st.session_state.lon)
-            st.success("Nota salvata nel registro!")
+col_form, col_hist = st.columns([1, 1])
+
+with col_form:
+    st.markdown("##### ✍️ Aggiungi un Trattamento")
+    t_date = st.date_input("Data Effettiva del Trattamento:", datetime.now())
+    t_operator = st.text_input("Operatore / Applicatore:", value="Azienda")
+    t_details = st.text_area("Prodotto / Trattamento Effettuato (es. Rame metallico 2 kg/ha):")
+    
+    if st.button("💾 Salva nel Registro"):
+        if t_details:
+            add_treatment(str(t_date), t_operator, st.session_state.current_field, t_details, st.session_state.lat, st.session_state.lon)
+            st.success("Trattamento salvato nel registro!")
             st.rerun()
+        else:
+            st.warning("Inserisci i dettagli del trattamento.")
 
-comments_df = get_comments()
-if not comments_df.empty:
-    st.markdown("##### 📖 Storico Note Registrate")
-    st.dataframe(comments_df, use_container_width=True)
+with col_hist:
+    st.markdown("##### 📖 Storico Trattamenti Effettuati")
+    treat_df = get_treatments()
+    if not treat_df.empty:
+        st.dataframe(treat_df, use_container_width=True)
+    else:
+        st.info("Nessun trattamento ancora salvato.")
