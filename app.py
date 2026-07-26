@@ -13,7 +13,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Iniezione CSS per nascondere componenti nativi Streamlit
+# Iniezione CSS per pulizia interfaccia
 hide_streamlit_style = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -55,6 +55,13 @@ def save_field(name, crop, lat, lon):
             "INSERT OR REPLACE INTO fields (name, crop, lat, lon) VALUES (?, ?, ?, ?)",
             (name, crop, lat, lon),
         )
+        conn.commit()
+
+
+def delete_field(name):
+    with get_db_connection() as conn:
+        c = conn.cursor()
+        c.execute("DELETE FROM fields WHERE name = ?", (name,))
         conn.commit()
 
 
@@ -100,7 +107,7 @@ def get_alerts():
         )
 
 
-# --- 2. API METEO CON CACHE AGGRESSIVA ---
+# --- API METEO CON CACHE AGGRESSIVA ---
 @st.cache_data(ttl=3600)
 def fetch_weather_advanced(lat, lon):
     url = (
@@ -120,7 +127,7 @@ def fetch_weather_advanced(lat, lon):
     return None
 
 
-# --- 3. API SATELLITE CON CACHE AGGRESSIVA ---
+# --- API SATELLITE CON CACHE AGGRESSIVA ---
 @st.cache_data(ttl=86400)
 def get_cdse_token(client_id, client_secret):
     auth_url = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
@@ -266,10 +273,11 @@ if "lon" not in st.session_state:
 if "current_field" not in st.session_state:
     st.session_state.current_field = "Posizione Iniziale"
 
-# --- SIDEBAR: GESTIONE CAMPI ---
+# --- SIDEBAR: GESTIONE & SELEZIONE CAMPI ---
 st.sidebar.title("🏡 I Miei Campi")
 
 fields_df = get_fields()
+
 if not fields_df.empty:
     field_names = [
         "-- Seleziona Campo Salvato --"
@@ -280,11 +288,26 @@ if not fields_df.empty:
 
     if selected_option != "-- Seleziona Campo Salvato --":
         row = fields_df[fields_df["name"] == selected_option].iloc[0]
+
+        # Cambio posizione se selezionato un nuovo campo
         if st.session_state.current_field != row["name"]:
             st.session_state.lat = row["lat"]
             st.session_state.lon = row["lon"]
             st.session_state.current_field = row["name"]
             st.rerun()
+
+        # Pulsante per eliminare il campo attualmente selezionato
+        if st.sidebar.button(
+            f"🗑️ Elimina '{selected_option}'", type="secondary"
+        ):
+            delete_field(selected_option)
+            st.sidebar.success(f"Campo '{selected_option}' eliminato!")
+            st.session_state.current_field = "Posizione Iniziale"
+            st.rerun()
+else:
+    st.sidebar.info(
+        "Nessun campo salvato nel database. Usa il modulo sotto per aggiungerne uno."
+    )
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("➕ Salva Posizione Attuale")
@@ -301,28 +324,28 @@ if st.sidebar.button("💾 Salva Campo"):
             st.session_state.lat,
             st.session_state.lon,
         )
+        st.session_state.current_field = new_field_name
         st.sidebar.success(f"Campo '{new_field_name}' salvato!")
         st.rerun()
     else:
-        st.sidebar.warning("Inserisci un nome.")
+        st.sidebar.warning("Inserisci un nome per il campo.")
 
 # --- MAIN PAGE ---
 st.title("🌾 AgriDSS: Monitoraggio & Allarmi Territoriali")
 st.caption(
-    f"📍 **Campo Selezionato**: {st.session_state.current_field} | **Lat**: {st.session_state.lat:.5f} | **Lon**: {st.session_state.lon:.5f}"
+    f"📍 **Campo Attivo**: {st.session_state.current_field} | **Lat**: {st.session_state.lat:.5f} | **Lon**: {st.session_state.lon:.5f}"
 )
 
-# Fetch dati
+# Fetch Dati
 w_data = fetch_weather_advanced(st.session_state.lat, st.session_state.lon)
 sat_json = fetch_satellite_statistics(
     st.session_state.lat, st.session_state.lon
 )
 df_sat = parse_satellite_json(sat_json)
 
-# --- 4. BLOCCHI SINTETICI IN EVIDENZA (METRIC CARDS) ---
+# --- METRIC CARDS ---
 col_m1, col_m2, col_m3 = st.columns(3)
 
-# 1. Metric Card NDVI
 last_ndvi = (
     df_sat["NDVI"].iloc[0]
     if (not df_sat.empty and "NDVI" in df_sat.columns)
@@ -335,7 +358,6 @@ col_m1.metric(
     delta="Ottimo" if last_ndvi and last_ndvi > 0.5 else "Nella media",
 )
 
-# 2. Metric Card Rischio Fitosanitario
 risk_label = "BASSO 🟢"
 if w_data and "daily" in w_data:
     avg_tmax = sum(w_data["daily"]["temperature_2m_max"][:3]) / 3
@@ -343,7 +365,6 @@ if w_data and "daily" in w_data:
         risk_label = "MEDIO 🟡"
 col_m2.metric(label="🛡️ Rischio Fitosanitario", value=risk_label)
 
-# 3. Metric Card Pioggia Cumulata 7 giorni
 rain_sum = (
     sum(w_data["daily"]["precipitation_sum"][:7])
     if w_data and "daily" in w_data
@@ -379,7 +400,6 @@ if map_data and map_data.get("last_clicked"):
     clicked_lat = map_data["last_clicked"]["lat"]
     clicked_lon = map_data["last_clicked"]["lng"]
 
-    # Rerun solo se la coordinata è cambiata significativamente
     if (
         abs(clicked_lat - st.session_state.lat) > 0.0001
         or abs(clicked_lon - st.session_state.lon) > 0.0001
@@ -389,7 +409,7 @@ if map_data and map_data.get("last_clicked"):
         st.session_state.current_field = "Punto cliccato su Mappa"
         st.rerun()
 
-# --- SEZIONE SEGNALAZIONE ANONIMA ---
+# --- SEZIONE SEGNALAZIONI ---
 with st.expander(
     "🚨 Invia una Segnalazione Anonima (Mosca, Peronospora, Gelata, ecc.)"
 ):
@@ -423,7 +443,7 @@ with st.expander(
 
 st.markdown("---")
 
-# --- 5. ANALISI TABELLARE METEO & SATELLITE ---
+# --- SEZIONE TABELLARE METEO & SATELLITE ---
 st.subheader("📊 Analisi Satellitare & Previsioni Meteo Avanzate")
 
 tab_sat, tab_weather = st.tabs(
