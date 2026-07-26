@@ -7,25 +7,21 @@ import requests
 import streamlit as st
 from streamlit_folium import st_folium
 
-# --- CONFIGURAZIONE ABBONAMENTO (Simulato) ---
-MAX_CAMPI_ABBONAMENTO = (
-    3  # Limite campi in base al piano (es. Base = 3, Pro = 10)
-)
+# --- CONFIGURAZIONE ABBONAMENTO ---
+MAX_CAMPI_ABBONAMENTO = 3
 
-# --- 1. CONFIGURAZIONE PAGINA & CSS CORRETTO ---
+# --- CONFIGURAZIONE PAGINA & CSS ---
 st.set_page_config(
     page_title="AgriDSS - Gestione Campi & Allarmi",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# Fix CSS: Nascondiamo menu ed elementi inutili SENZA nascondere il pulsante della sidebar
 css_custom = """
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     div[data-testid="stStatusWidget"] {visibility: hidden;}
-    /* Mantiene visibile il bottone per aprire/chiudere la sidebar */
     [data-testid="stSidebarCollapseButton"] {visibility: visible !important; z-index: 1000;}
     .block-container {padding-top: 1.5rem; padding-bottom: 1.5rem;}
     </style>
@@ -120,7 +116,7 @@ def get_alerts():
         )
 
 
-# --- API CALLS WITH CACHE ---
+# --- API METEO ---
 @st.cache_data(ttl=3600)
 def fetch_weather_advanced(lat, lon):
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,et0_fao_evapotranspiration,wind_speed_10m_max&hourly=relative_humidity_2m,soil_moisture_0_to_7cm&past_days=7&timezone=Europe/Berlin"
@@ -133,9 +129,9 @@ def fetch_weather_advanced(lat, lon):
     return None
 
 
-@st.cache_data(ttl=86400)
+# --- API SATELLITE (DEBUG MODE) ---
+@st.cache_data(ttl=3600)
 def fetch_satellite_statistics(lat, lon):
-    # Sostituire con credenziali valide se necessario
     client_id = "sh-fea07070-5af9-419b-9bcf-9aa06c70b822"
     client_secret = "ryKBfLw9vwdFlDrGpjcgHkk1T4sRnSSD"
 
@@ -151,10 +147,13 @@ def fetch_satellite_statistics(lat, lon):
             timeout=10,
         )
         if auth_res.status_code != 200:
-            return None
+            return {
+                "error": f"Errore Autenticazione OAuth Copernicus (Status {auth_res.status_code})"
+            }
+
         token = auth_res.json().get("access_token")
-    except Exception:
-        return None
+    except Exception as e:
+        return {"error": f"Eccezione durante la connessione OAUTH: {str(e)}"}
 
     now_utc = datetime.now(timezone.utc)
     data_fine = now_utc.strftime("%Y-%m-%dT23:59:59Z")
@@ -170,24 +169,23 @@ def fetch_satellite_statistics(lat, lon):
         },
         "aggregation": {
             "timeRange": {"from": data_inizio, "to": data_fine},
-            "aggregationInterval": {"of": "P1D"},
+            "aggregationInterval": {"of": "P5D"},
             "resx": 10,
             "resy": 10,
             "evalscript": """
             //VERSION=3
             function setup() {
                 return {
-                    input: ['B04', 'B08', 'B11', 'B03', 'SCL', 'dataMask'],
-                    output: [{ id: 'ndvi', bands: 1 }, { id: 'msavi', bands: 1 }, { id: 'ndmi', bands: 1 }, { id: 'ndwi', bands: 1 }]
+                    input: ['B04', 'B08', 'B11', 'B03', 'SCL'],
+                    output: [{ id: 'ndvi', bands: 1 }, { id: 'msavi', bands: 1 }, { id: 'ndmi', bands: 1 }]
                 };
             }
             function evaluatePixel(s) {
-                if ([3, 8, 9, 10, 11].includes(s.SCL)) { return { ndvi: [NaN], msavi: [NaN], ndmi: [NaN], ndwi: [NaN] }; }
+                if ([3, 8, 9, 10, 11].includes(s.SCL)) { return { ndvi: [NaN], msavi: [NaN], ndmi: [NaN] }; }
                 return {
                     ndvi: [(s.B08 - s.B04) / (s.B08 + s.B04)],
                     msavi: [(2 * s.B08 + 1 - Math.sqrt(Math.pow(2 * s.B08 + 1, 2) - 8 * (s.B08 - s.B04))) / 2],
-                    ndmi: [(s.B08 - s.B11) / (s.B08 + s.B11)],
-                    ndwi: [(s.B03 - s.B08) / (s.B03 + s.B08)]
+                    ndmi: [(s.B08 - s.B11) / (s.B08 + s.B11)]
                 };
             }
             """,
@@ -198,7 +196,6 @@ def fetch_satellite_statistics(lat, lon):
                 "statistics": {"default": {"percentiles": {"k": [10.0]}}}
             },
             "ndmi": {"statistics": {"default": {"percentiles": {"k": [10.0]}}}},
-            "ndwi": {"statistics": {"default": {"percentiles": {"k": [10.0]}}}},
         },
     }
     try:
@@ -206,18 +203,27 @@ def fetch_satellite_statistics(lat, lon):
             "https://sh.dataspace.copernicus.eu/api/v1/statistics",
             json=payload,
             headers={"Authorization": f"Bearer {token}"},
-            timeout=20,
+            timeout=15,
         )
         if res.status_code == 200:
             return res.json()
-    except Exception:
-        pass
-    return None
+        else:
+            return {
+                "error": f"Errore API Copernicus Statistics (Status {res.status_code}): {res.text}"
+            }
+    except Exception as e:
+        return {"error": f"Eccezione durante la richiesta Dati: {str(e)}"}
 
 
 def parse_satellite_json(data):
-    if not data or "data" not in data:
+    if not data:
+        st.error("⚠️ Nessun dato ricevuto dal server.")
         return pd.DataFrame()
+
+    if isinstance(data, dict) and "error" in data:
+        st.error(f"🔧 **DEBUG API:** {data['error']}")
+        return pd.DataFrame()
+
     records = []
     for item in data.get("data", []):
         outputs = item.get("outputs", {})
@@ -247,16 +253,20 @@ def parse_satellite_json(data):
                 "NDVI": round(ndvi, 3),
                 "MSAVI": round(get_v("msavi") or 0, 3),
                 "NDMI": round(get_v("ndmi") or 0, 3),
-                "NDWI": round(get_v("ndwi") or 0, 3),
             })
+
     df = pd.DataFrame(records)
+    if df.empty:
+        st.info(
+            "ℹ️ API Copernicus collegata con successo, ma nessun passaggio satellitare privo di nuvole è presente negli ultimi 45 giorni su queste coordinate."
+        )
+
     return df.sort_values(by="Data", ascending=False) if not df.empty else df
 
 
 # --- INIZIALIZZAZIONE SESSIONE ---
 fields_df = get_fields()
 
-# Se è la prima volta e ci sono campi salvati, carica il primo
 if "active_field_name" not in st.session_state:
     if not fields_df.empty:
         st.session_state.active_field_name = fields_df.iloc[0]["name"]
@@ -267,20 +277,17 @@ if "active_field_name" not in st.session_state:
         st.session_state.active_lat = 43.007721
         st.session_state.active_lon = 12.146461
 
-# Punto per le segnalazioni da mappa
-if "alert_lat" not in st.session_state:
-    st.session_state.alert_lat = st.session_state.active_lat
-if "alert_lon" not in st.session_state:
-    st.session_state.alert_lon = st.session_state.active_lon
+if "clicked_lat" not in st.session_state:
+    st.session_state.clicked_lat = st.session_state.active_lat
+if "clicked_lon" not in st.session_state:
+    st.session_state.clicked_lon = st.session_state.active_lon
 
 
-# --- SIDEBAR: GESTIONE CAMPI (LIMITATI DA ABBONAMENTO) ---
+# --- SIDEBAR: GESTIONE CAMPI ---
 st.sidebar.title("🏡 I Miei Campi")
 
-# 1. Selettore Campo Attivo
 if not fields_df.empty:
     options = fields_df["name"].tolist()
-    # Trova l'indice attuale
     curr_idx = (
         options.index(st.session_state.active_field_name)
         if st.session_state.active_field_name in options
@@ -296,8 +303,8 @@ if not fields_df.empty:
         st.session_state.active_field_name = row["name"]
         st.session_state.active_lat = row["lat"]
         st.session_state.active_lon = row["lon"]
-        st.session_state.alert_lat = row["lat"]
-        st.session_state.alert_lon = row["lon"]
+        st.session_state.clicked_lat = row["lat"]
+        st.session_state.clicked_lon = row["lon"]
         st.rerun()
 
     if st.sidebar.button(f"🗑️ Elimina '{selected_field}'"):
@@ -310,7 +317,7 @@ else:
 
 st.sidebar.markdown("---")
 
-# 2. Controllo Limite Abbonamento per Aggiunta Campi
+# Form Aggiunta Campo
 num_campi = len(fields_df)
 st.sidebar.caption(
     f"Campi salvati: **{num_campi}/{MAX_CAMPI_ABBONAMENTO}** (Piano Base)"
@@ -318,30 +325,32 @@ st.sidebar.caption(
 
 if num_campi < MAX_CAMPI_ABBONAMENTO:
     st.sidebar.subheader("➕ Aggiungi Nuovo Campo")
+    st.sidebar.info("👉 *Fai click sulla mappa per acquisire la posizione.*")
+
     new_name = st.sidebar.text_input("Nome Campo:")
     new_crop = st.sidebar.selectbox(
         "Coltura:", ["Oliveto", "Vigneto", "Seminativo", "Noccioleto", "Altro"]
     )
-    new_lat = st.sidebar.number_input(
-        "Latitudine:", value=st.session_state.active_lat, format="%.6f"
+
+    saved_lat = st.sidebar.number_input(
+        "Latitudine:", value=st.session_state.clicked_lat, format="%.6f"
     )
-    new_lon = st.sidebar.number_input(
-        "Longitudine:", value=st.session_state.active_lon, format="%.6f"
+    saved_lon = st.sidebar.number_input(
+        "Longitudine:", value=st.session_state.clicked_lon, format="%.6f"
     )
 
     if st.sidebar.button("💾 Salva Campo"):
         if new_name:
-            save_field(new_name, new_crop, new_lat, new_lon)
+            save_field(new_name, new_crop, saved_lat, saved_lon)
             st.session_state.active_field_name = new_name
-            st.session_state.active_lat = new_lat
-            st.session_state.active_lon = new_lon
+            st.session_state.active_lat = saved_lat
+            st.session_state.active_lon = saved_lon
             st.sidebar.success("Campo aggiunto!")
             st.rerun()
         else:
             st.sidebar.error("Inserisci un nome!")
 else:
-    st.sidebar.error("⚠️ Hai raggiunto il limite massimo del tuo abbonamento.")
-    st.sidebar.info("💡 Passa al Piano Premium per gestire campi illimitati.")
+    st.sidebar.error("⚠️ Limite massimo di campi raggiunto.")
 
 
 # --- MAIN PAGE ---
@@ -350,7 +359,7 @@ st.caption(
     f"📍 **Campo Attivo**: {st.session_state.active_field_name} | **Lat**: {st.session_state.active_lat:.5f} | **Lon**: {st.session_state.active_lon:.5f}"
 )
 
-# Fetch Dati riferiti SOLO al campo attivo
+# Fetch Dati
 w_data = fetch_weather_advanced(
     st.session_state.active_lat, st.session_state.active_lon
 )
@@ -369,8 +378,8 @@ last_ndvi = (
 )
 col1.metric(
     "🛰️ Indice Vigore (NDVI)",
-    f"{last_ndvi:.2f}" if last_ndvi else "N/D",
-    "Ottimo" if last_ndvi and last_ndvi > 0.5 else "Normale",
+    f"{last_ndvi:.2f}" if last_ndvi is not None else "N/D",
+    "Ottimo" if (last_ndvi and last_ndvi > 0.5) else "Sotto controllo",
 )
 
 risk = "BASSO 🟢"
@@ -388,8 +397,8 @@ col3.metric("🌧️ Pioggia Ultimi 7gg", f"{rain_sum:.1f} mm")
 
 st.markdown("---")
 
-# --- MAPPA E SEGNALAZIONI ---
-st.subheader("🗺️ Mappa Territoriale & Segnalazioni")
+# --- MAPPA INTERATTIVA ---
+st.subheader("🗺️ Mappa Territoriale")
 
 m = folium.Map(
     location=[st.session_state.active_lat, st.session_state.active_lon],
@@ -403,18 +412,18 @@ folium.Marker(
     icon=folium.Icon(color="green", icon="leaf"),
 ).add_to(m)
 
-# Marker punto selezionato per segnalazione
+# Marker Cliccato
 if (
-    st.session_state.alert_lat != st.session_state.active_lat
-    or st.session_state.alert_lon != st.session_state.active_lon
+    st.session_state.clicked_lat != st.session_state.active_lat
+    or st.session_state.clicked_lon != st.session_state.active_lon
 ):
     folium.Marker(
-        [st.session_state.alert_lat, st.session_state.alert_lon],
-        popup="Punto per Segnalazione",
+        [st.session_state.clicked_lat, st.session_state.clicked_lon],
+        popup="Punto Selezionato",
         icon=folium.Icon(color="orange", icon="info-sign"),
     ).add_to(m)
 
-# Allarmi condivisi sulla mappa
+# Allarmi
 alerts_df = get_alerts()
 if not alerts_df.empty:
     for _, alert in alerts_df.iterrows():
@@ -426,22 +435,21 @@ if not alerts_df.empty:
 
 map_data = st_folium(m, width=750, height=350, key="agri_map")
 
-# Se l'utente clicca sulla mappa, aggiorniamo SOLO le coordinate della segnalazione
 if map_data and map_data.get("last_clicked"):
     cl_lat = map_data["last_clicked"]["lat"]
     cl_lon = map_data["last_clicked"]["lng"]
     if (
-        abs(cl_lat - st.session_state.alert_lat) > 0.0001
-        or abs(cl_lon - st.session_state.alert_lon) > 0.0001
+        abs(cl_lat - st.session_state.clicked_lat) > 0.0001
+        or abs(cl_lon - st.session_state.clicked_lon) > 0.0001
     ):
-        st.session_state.alert_lat = cl_lat
-        st.session_state.alert_lon = cl_lon
+        st.session_state.clicked_lat = cl_lat
+        st.session_state.clicked_lon = cl_lon
         st.rerun()
 
-# Modulo Segnalazioni
+# --- SEGNALAZIONI ---
 with st.expander("📢 Invia una Segnalazione Anonima nella zona"):
     st.caption(
-        f"Coordinata segnalazione selezionata: Lat {st.session_state.alert_lat:.5f}, Lon {st.session_state.alert_lon:.5f} (fai click sulla mappa per cambiarla)"
+        f"Posizione: **Lat {st.session_state.clicked_lat:.5f}, Lon {st.session_state.clicked_lon:.5f}**"
     )
     a_type = st.selectbox(
         "Avvistamento / Anomalia:",
@@ -453,29 +461,27 @@ with st.expander("📢 Invia una Segnalazione Anonima nella zona"):
             "Altro",
         ],
     )
-    a_desc = st.text_input("Dettagli (es. 5% frutti colpiti):")
+    a_desc = st.text_input("Dettagli:")
     if st.button("🚨 Pubblica Segnalazione"):
         add_alert(
             a_type,
             a_desc or "Segnalazione generica",
-            st.session_state.alert_lat,
-            st.session_state.alert_lon,
+            st.session_state.clicked_lat,
+            st.session_state.clicked_lon,
         )
-        st.success("Segnalazione inviata con successo a tutta la community!")
+        st.success("Segnalazione inviata!")
         st.rerun()
 
 st.markdown("---")
 
-# --- TABELLE DATI SATELLITE & METEO ---
-st.subheader("📊 Dati Dettagliati Campo")
-t_sat, t_meteo = st.tabs(["🛰️ Satellite", "☀️ Meteo & Suolo"])
+# --- TABELLE E DATI ---
+st.subheader("📊 Analisi Dettagliata")
+t_sat, t_meteo = st.tabs(["🛰️ Satellite Sentinel-2", "☀️ Meteo & Suolo"])
 
 with t_sat:
     if not df_sat.empty:
         st.dataframe(df_sat, use_container_width=True, hide_index=True)
         st.line_chart(df_sat.set_index("Data")[["NDVI", "MSAVI", "NDMI"]])
-    else:
-        st.info("Nessun dato satellitare disponibile al momento.")
 
 with t_meteo:
     if w_data and "daily" in w_data:
@@ -491,8 +497,8 @@ with t_meteo:
 
 st.markdown("---")
 
-# --- QUADERNO DI CAMPAGNA & ESPORTAZIONI ---
-st.subheader("📋 Registro Trattamenti & Quaderno di Campagna")
+# --- QUADERNO DI CAMPAGNA ---
+st.subheader("📋 Registro Trattamenti & Esportazione PDF/CSV")
 
 col_form, col_table = st.columns([1, 1.2])
 
@@ -517,31 +523,28 @@ with col_form:
 
 with col_table:
     st.markdown(
-        f"##### 📖 Registro Trattamenti per: *{st.session_state.active_field_name}*"
+        f"##### 📖 Registro per: *{st.session_state.active_field_name}*"
     )
     treatments_df = get_treatments(st.session_state.active_field_name)
 
     if not treatments_df.empty:
         st.dataframe(treatments_df, use_container_width=True, hide_index=True)
 
-        # SEZIONE ESPORTAZIONE DATI (CSV & PDF/STAMPA)
         st.markdown("###### 📥 Esporta Registro")
         c_exp1, c_exp2 = st.columns(2)
 
-        # 1. Download CSV
         csv_data = treatments_df.to_csv(index=False).encode("utf-8")
         c_exp1.download_button(
-            label="📄 Scarica CSV (Excel)",
+            label="📄 Scarica CSV",
             data=csv_data,
             file_name=f"quaderno_campagna_{st.session_state.active_field_name}.csv",
             mime="text/csv",
         )
 
-        # 2. Export HTML/PDF per Stampa
         html_table = treatments_df.to_html(index=False)
-        full_html = f"<html><head><title>Quaderno di Campagna - {st.session_state.active_field_name}</title></style></head><body><h2>Quaderno di Campagna - {st.session_state.active_field_name}</h2>{html_table}</body></html>"
+        full_html = f"<html><head><title>Quaderno di Campagna - {st.session_state.active_field_name}</title></head><body><h2>Quaderno di Campagna - {st.session_state.active_field_name}</h2>{html_table}</body></html>"
         c_exp2.download_button(
-            label="🖨️ Scarica PDF / Stampa",
+            label="🖨️ Scarica Report PDF/HTML",
             data=full_html,
             file_name=f"quaderno_campagna_{st.session_state.active_field_name}.html",
             mime="text/html",
