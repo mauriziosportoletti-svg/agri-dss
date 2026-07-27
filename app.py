@@ -225,11 +225,11 @@ def fetch_satellite_statistics(lat, lon):
 
 def parse_satellite_json(data):
     if not data:
-        st.error("⚠️ Nessun dato ricevuto dal server.")
+        st.error("âš ï¸ Nessun dato ricevuto dal server.")
         return pd.DataFrame()
 
     if isinstance(data, dict) and "error" in data:
-        st.error(f"🔧 **DEBUG API:** {data['error']}")
+        st.error(f"ðŸ”§ **DEBUG API:** {data['error']}")
         return pd.DataFrame()
 
     records = []
@@ -266,7 +266,7 @@ def parse_satellite_json(data):
     df = pd.DataFrame(records)
     if df.empty:
         st.info(
-            "ℹ️ API Copernicus collegata con successo, ma nessun passaggio satellitare privo di nuvole è presente negli ultimi 45 giorni su queste coordinate."
+            "â„¹ï¸ API Copernicus collegata con successo, ma nessun passaggio satellitare privo di nuvole Ã¨ presente negli ultimi 45 giorni su queste coordinate."
         )
 
     return df.sort_values(by="Data", ascending=False) if not df.empty else df
@@ -292,7 +292,7 @@ if "clicked_lon" not in st.session_state:
 
 
 # --- SIDEBAR: GESTIONE CAMPI ---
-st.sidebar.title("🏡 I Miei Campi")
+st.sidebar.title("ðŸ¡ I Miei Campi")
 
 if not fields_df.empty:
     options = fields_df["name"].tolist()
@@ -315,7 +315,7 @@ if not fields_df.empty:
         st.session_state.clicked_lon = row["lon"]
         st.rerun()
 
-    if st.sidebar.button(f"🗑️ Elimina '{selected_field}'"):
+    if st.sidebar.button(f"ðŸ—‘ï¸ Elimina '{selected_field}'"):
         delete_field(selected_field)
         st.sidebar.success("Campo eliminato!")
         st.session_state.pop("active_field_name", None)
@@ -331,8 +331,8 @@ st.sidebar.caption(
 )
 
 if num_campi < MAX_CAMPI_ABBONAMENTO:
-    st.sidebar.subheader("➕ Aggiungi Nuovo Campo")
-    st.sidebar.info("👉 *Fai click sulla mappa per acquisire la posizione.*")
+    st.sidebar.subheader("âž• Aggiungi Nuovo Campo")
+    st.sidebar.info("ðŸ‘‰ *Fai click sulla mappa per acquisire la posizione.*")
 
     new_name = st.sidebar.text_input("Nome Campo:")
     new_crop = st.sidebar.selectbox(
@@ -346,7 +346,7 @@ if num_campi < MAX_CAMPI_ABBONAMENTO:
         "Longitudine:", value=st.session_state.clicked_lon, format="%.6f"
     )
 
-    if st.sidebar.button("💾 Salva Campo"):
+    if st.sidebar.button("ðŸ’¾ Salva Campo"):
         if new_name:
             save_field(new_name, new_crop, saved_lat, saved_lon)
             st.session_state.active_field_name = new_name
@@ -357,13 +357,13 @@ if num_campi < MAX_CAMPI_ABBONAMENTO:
         else:
             st.sidebar.error("Inserisci un nome!")
 else:
-    st.sidebar.error("⚠️ Limite massimo di campi raggiunto.")
+    st.sidebar.error("âš ï¸ Limite massimo di campi raggiunto.")
 
 
 # --- MAIN PAGE ---
-st.title("🌾 AgriDSS: Monitoraggio & Allarmi")
+st.title("ðŸŒ¾ AgriDSS: Monitoraggio & Allarmi")
 st.caption(
-    f"📍 **Campo Attivo**: {st.session_state.active_field_name} | **Lat**: {st.session_state.active_lat:.5f} | **Lon**: {st.session_state.active_lon:.5f}"
+    f"ðŸ“ **Campo Attivo**: {st.session_state.active_field_name} | **Lat**: {st.session_state.active_lat:.5f} | **Lon**: {st.session_state.active_lon:.5f}"
 )
 
 # Fetch Dati
@@ -381,8 +381,8 @@ if w_data and "daily" in w_data:
     d = w_data["daily"]
     df_meteo = pd.DataFrame({
         "Data": d["time"],
-        "Temp Max (°C)": d["temperature_2m_max"],
-        "Temp Min (°C)": d["temperature_2m_min"],
+        "Temp Max (Â°C)": d["temperature_2m_max"],
+        "Temp Min (Â°C)": d["temperature_2m_min"],
         "Pioggia (mm)": d["precipitation_sum"],
         "ET0 (mm)": d["et0_fao_evapotranspiration"],
     })
@@ -396,28 +396,28 @@ last_ndvi = (
     else None
 )
 col1.metric(
-    "🛰️ Indice Vigore (NDVI)",
+    "ðŸ›°ï¸ Indice Vigore (NDVI)",
     f"{last_ndvi:.2f}" if last_ndvi is not None else "N/D",
     "Ottimo" if (last_ndvi and last_ndvi > 0.5) else "Sotto controllo",
 )
 
-risk = "BASSO 🟢"
+risk = "BASSO ðŸŸ¢"
 if w_data and "daily" in w_data:
     if (sum(w_data["daily"]["temperature_2m_max"][:3]) / 3) > 22:
-        risk = "MEDIO 🟡"
-col2.metric("🛡️ Rischio Fitosanitario", risk)
+        risk = "MEDIO ðŸŸ¡"
+col2.metric("ðŸ›¡ï¸ Rischio Fitosanitario", risk)
 
 rain_sum = (
     sum(w_data["daily"]["precipitation_sum"][:7])
     if w_data and "daily" in w_data
     else 0.0
 )
-col3.metric("🌧️ Pioggia Ultimi 7gg", f"{rain_sum:.1f} mm")
+col3.metric("ðŸŒ§ï¸ Pioggia Ultimi 7gg", f"{rain_sum:.1f} mm")
 
 st.markdown("---")
 
 # --- MAPPA INTERATTIVA ---
-st.subheader("🗺️ Mappa Territoriale")
+st.subheader("ðŸ—ºï¸ Mappa Territoriale")
 
 m = folium.Map(
     location=[st.session_state.active_lat, st.session_state.active_lon],
@@ -445,7 +445,7 @@ if not alerts_df.empty:
     for _, alert in alerts_df.iterrows():
         folium.Marker(
             [alert["lat"], alert["lon"]],
-            popup=f"<b>⚠️ {alert['alert_type']}</b><br>{alert['description']}<br><i>{alert['created_at']}</i>",
+            popup=f"<b>âš ï¸ {alert['alert_type']}</b><br>{alert['description']}<br><i>{alert['created_at']}</i>",
             icon=folium.Icon(color="red", icon="warning", prefix="fa"),
         ).add_to(m)
 
@@ -463,7 +463,7 @@ if map_data and map_data.get("last_clicked"):
         st.rerun()
 
 # --- SEGNALAZIONI ---
-with st.expander("📢 Invia una Segnalazione Anonima nella zona"):
+with st.expander("ðŸ“¢ Invia una Segnalazione Anonima nella zona"):
     st.caption(
         f"Posizione: **Lat {st.session_state.clicked_lat:.5f}, Lon {st.session_state.clicked_lon:.5f}**"
     )
@@ -472,13 +472,13 @@ with st.expander("📢 Invia una Segnalazione Anonima nella zona"):
         [
             "Avvistamento Mosca Olearia",
             "Attacco Peronospora / Oidio",
-            "Siccità Severa",
+            "SiccitÃ  Severa",
             "Danni da Gelata / Grandine",
             "Altro",
         ],
     )
     a_desc = st.text_input("Dettagli:")
-    if st.button("🚨 Pubblica Segnalazione"):
+    if st.button("ðŸš¨ Pubblica Segnalazione"):
         add_alert(
             a_type,
             a_desc or "Segnalazione generica",
@@ -491,8 +491,8 @@ with st.expander("📢 Invia una Segnalazione Anonima nella zona"):
 st.markdown("---")
 
 # --- TABELLE E DATI ---
-st.subheader("📊 Analisi Dettagliata & Storico")
-t_sat, t_meteo = st.tabs(["🛰️ Satellite Sentinel-2", "☀️ Meteo & Suolo"])
+st.subheader("ðŸ“Š Analisi Dettagliata & Storico")
+t_sat, t_meteo = st.tabs(["ðŸ›°ï¸ Satellite Sentinel-2", "â˜€ï¸ Meteo & Suolo"])
 
 with t_sat:
     if not df_sat.empty:
@@ -504,7 +504,7 @@ with t_meteo:
         st.dataframe(df_meteo, use_container_width=True, hide_index=True)
 
 # --- NUOVA SEZIONE: ESPORTAZIONE UNIFICATA REPORT (METEO + SATELLITE) ---
-st.markdown("#### 📥 Esporta Report Storico (Meteo + Satellite)")
+st.markdown("#### ðŸ“¥ Esporta Report Storico (Meteo + Satellite)")
 exp_col1, exp_col2 = st.columns(2)
 
 # 1. GENERAZIONE TABELLONE EXCEL / CSV UNIFICATO
@@ -516,7 +516,7 @@ if not df_sat.empty or not df_meteo.empty:
     csv_report = df_combined.to_csv(index=False).encode("utf-8")
 
     exp_col1.download_button(
-        label="📊 Scarica Tabellone Completo CSV (Excel)",
+        label="ðŸ“Š Scarica Tabellone Completo CSV (Excel)",
         data=csv_report,
         file_name=f"report_meteo_sat_{st.session_state.active_field_name}.csv",
         mime="text/csv",
@@ -551,17 +551,17 @@ report_html = f"""
     </style>
 </head>
 <body>
-    <h1>🌾 Report Agronomico Integrato</h1>
+    <h1>ðŸŒ¾ Report Agronomico Integrato</h1>
     <div class="info-box">
         <p><b>Campo:</b> {st.session_state.active_field_name}</p>
         <p><b>Coordinate:</b> Lat {st.session_state.active_lat:.5f}, Lon {st.session_state.active_lon:.5f}</p>
         <p><b>Data Report:</b> {datetime.now().strftime('%d/%m/%Y %H:%M')}</p>
     </div>
 
-    <h2>🛰️ Dati Satellitari (Sentinel-2)</h2>
+    <h2>ðŸ›°ï¸ Dati Satellitari (Sentinel-2)</h2>
     {html_sat}
 
-    <h2>☀️ Storico Meteo</h2>
+    <h2>â˜€ï¸ Storico Meteo</h2>
     {html_meteo}
 
     <div class="footer">
@@ -572,7 +572,7 @@ report_html = f"""
 """
 
 exp_col2.download_button(
-    label="📄 Scarica Report PDF / Stampabile",
+    label="ðŸ“„ Scarica Report PDF / Stampabile",
     data=report_html,
     file_name=f"report_integrato_{st.session_state.active_field_name}.html",
     mime="text/html",
@@ -581,17 +581,17 @@ exp_col2.download_button(
 st.markdown("---")
 
 # --- QUADERNO DI CAMPAGNA ---
-st.subheader("📋 Registro Trattamenti & Esportazione")
+st.subheader("ðŸ“‹ Registro Trattamenti & Esportazione")
 
 col_form, col_table = st.columns([1, 1.2])
 
 with col_form:
-    st.markdown("##### ✍️ Registra Operazione")
+    st.markdown("##### âœï¸ Registra Operazione")
     t_date = st.date_input("Data Operazione:", datetime.now())
     t_op = st.text_input("Operatore:", value="Azienda")
     t_text = st.text_area("Prodotto / Dose / Note:")
 
-    if st.button("💾 Salva Trattamento"):
+    if st.button("ðŸ’¾ Salva Trattamento"):
         if t_text:
             add_treatment(
                 str(t_date),
@@ -606,19 +606,19 @@ with col_form:
 
 with col_table:
     st.markdown(
-        f"##### 📖 Registro per: *{st.session_state.active_field_name}*"
+        f"##### ðŸ“– Registro per: *{st.session_state.active_field_name}*"
     )
     treatments_df = get_treatments(st.session_state.active_field_name)
 
     if not treatments_df.empty:
         st.dataframe(treatments_df, use_container_width=True, hide_index=True)
 
-        st.markdown("###### 📥 Esporta Registro Trattamenti")
+        st.markdown("###### ðŸ“¥ Esporta Registro Trattamenti")
         c_exp1, c_exp2 = st.columns(2)
 
         csv_data = treatments_df.to_csv(index=False).encode("utf-8")
         c_exp1.download_button(
-            label="📄 Scarica CSV",
+            label="ðŸ“„ Scarica CSV",
             data=csv_data,
             file_name=f"quaderno_campagna_{st.session_state.active_field_name}.csv",
             mime="text/csv",
@@ -627,10 +627,10 @@ with col_table:
         html_table = treatments_df.to_html(index=False)
         full_html = f"<html><head><title>Quaderno di Campagna - {st.session_state.active_field_name}</title></head><body><h2>Quaderno di Campagna - {st.session_state.active_field_name}</h2>{html_table}</body></html>"
         c_exp2.download_button(
-            label="🖨️ Scarica Report PDF/HTML",
+            label="ðŸ–¨ï¸ Scarica Report PDF/HTML",
             data=full_html,
             file_name=f"quaderno_campagna_{st.session_state.active_field_name}.html",
             mime="text/html",
         )
     else:
-        st.info("Nessun trattamento registrato per questo campo.")
+        st.info("Nessun trattamento regist
