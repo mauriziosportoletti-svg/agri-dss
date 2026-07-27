@@ -633,4 +633,4 @@ with col_table:
             mime="text/html",
         )
     else:
-        st.info("Nessun trattamento regist
+        st.info("Nessun trattamento registrato per questo campo.")
