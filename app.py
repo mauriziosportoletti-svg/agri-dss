@@ -16,7 +16,7 @@ MAX_CAMPI_ABBONAMENTO = 3
 
 # --- CONFIGURAZIONE PAGINA & CSS ---
 st.set_page_config(
-    page_title="AgriDSS - Monitoraggio Campi",
+    page_title="AgriDSS - Monitoraggio Campi & Allerte",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -125,26 +125,66 @@ def get_alerts():
         )
 
 
-# --- API METEO AD ALTA RISOLUZIONE (ICON-D2 2.2km) ---
+# --- API METEO AVANZATA (ICON-D2 2.2km + Set Completo per DSS) ---
 @st.cache_data(ttl=600)
 def fetch_weather_advanced(lat, lon):
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,et0_fao_evapotranspiration,wind_speed_10m_max&hourly=precipitation,relative_humidity_2m,soil_moisture_0_to_7cm&past_days=7&timezone=Europe/Berlin&models=icon_seamless"
+    url = (
+        f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+        "&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,et0_fao_evapotranspiration,wind_speed_10m_max"
+        "&hourly=temperature_2m,relative_humidity_2m,precipitation,weathercode,wind_gusts_10m,cape,soil_moisture_0_to_7cm"
+        "&past_days=7&timezone=Europe/Berlin&models=icon_seamless"
+    )
     try:
         res = requests.get(url, timeout=10)
         if res.status_code == 200:
             data = res.json()
-            if "hourly" in data and "precipitation" in data["hourly"]:
-                hourly_precip = data["hourly"]["precipitation"]
-                data["has_convective_storm"] = any(p > 5.0 for p in hourly_precip if p is not None)
-            else:
-                data["has_convective_storm"] = False
             return data
     except Exception:
         pass
     return None
 
 
-# --- HUB BOLLETTINI FITOSANITARI & LINK REGIONALI CORRETTI ---
+# --- ANALISI INTELLIGENTE DEI RISCHI (Grandine, Temporali, Gelate) ---
+def analyze_weather_risks(w_data):
+    if not w_data or "hourly" not in w_data:
+        return "NORMALE 🟢", "Condizioni meteorologiche stabili.", None
+
+    hourly = w_data["hourly"]
+    times = hourly.get("time", [])
+    capes = hourly.get("cape", [])
+    gusts = hourly.get("wind_gusts_10m", [])
+    wcodes = hourly.get("weathercode", [])
+    temps = hourly.get("temperature_2m", [])
+
+    # Analizziamo le prossime 48 ore per intercettare pericoli imminenti
+    for i in range(min(48, len(times))):
+        c = capes[i] if i < len(capes) and capes[i] is not None else 0
+        g = gusts[i] if i < len(gusts) and gusts[i] is not None else 0
+        wc = wcodes[i] if i < len(wcodes) and wcodes[i] is not None else 0
+        temp = temps[i] if i < len(temps) and temps[i] is not None else 20
+        t_str = times[i]
+
+        # Condizione 1: Rischio Temporale Forte / Grandine (CAPE alto + Raffiche forti o codice temporale WMO 95,96,99)
+        if (c > 1000 and g > 45) or wc in [95, 96, 99]:
+            desc = (f"⚠️ Rischio Temporale Severo / Grandine previsto per il {t_str}. "
+                    f"Raffiche stimate a {g} km/h e instabilità elevata (CAPE {c:.0f} J/kg).")
+            return "ATTENZIONE - GRANDINE/TEMPORALE 🔴", desc, {
+                "type": "Rischio Temporale / Grandine",
+                "desc": desc
+            }
+
+        # Condizione 2: Rischio Gelata (Temperatura sotto i 2°C)
+        if temp < 2.0:
+            desc = f"❄️ Rischio Gelata / Temperature critiche ({temp}°C) previste per il {t_str}."
+            return "ATTENZIONE - GELATA 🟡", desc, {
+                "type": "Rischio Gelata",
+                "desc": desc
+            }
+
+    return "NORMALE 🟢", "Nessuna criticità severa rilevata dai modelli ad alta risoluzione nelle prossime 48h.", None
+
+
+# --- HUB BOLLETTINI FITOSANITARI & PORTALE REGIONALE ---
 @st.cache_data(ttl=3600)
 def fetch_real_bulletin():
     rss_url = "https://agronotizie.imagelinenetwork.com/rss/difesa-e-diserbo.xml"
@@ -166,8 +206,8 @@ def fetch_real_bulletin():
     except Exception:
         pass
     return {
-        "title": "Portali Fitosanitari Regionali",
-        "desc": "Consulta direttamente i bollettini ufficiali validati dai servizi fitosanitari e dalle ARPA regionali.",
+        "title": "Portali Fitosanitari & ARPA Regionali",
+        "desc": "Consulta direttamente i bollettini ufficiali validati dai servizi fitosanitari e dalle ARPA della tua regione.",
         "link": "https://www.sian.it/portale-mipaaf/home.jsp"
     }
 
@@ -372,12 +412,15 @@ st.caption(
     f"📍 **Campo Attivo**: {st.session_state.active_field_name} ({st.session_state.active_crop}) | **Lat**: {st.session_state.active_lat:.5f} | **Lon**: {st.session_state.active_lon:.5f}"
 )
 
-# Fetch Dati
+# Fetch Dati Meteo & Satellite
 w_data = fetch_weather_advanced(st.session_state.active_lat, st.session_state.active_lon)
 sat_json = fetch_satellite_statistics(st.session_state.active_lat, st.session_state.active_lon)
 df_sat = parse_satellite_json(sat_json)
 
-# Prepariamo la tabella meteo
+# Analisi Automatica Rischi Meteo (Grandine, Temporali, Gelate)
+risk_level, risk_description, pending_alert = analyze_weather_risks(w_data)
+
+# Prepariamo la tabella meteo giornaliera
 df_meteo = pd.DataFrame()
 if w_data and "daily" in w_data:
     d = w_data["daily"]
@@ -387,11 +430,8 @@ if w_data and "daily" in w_data:
         "Temp Min (°C)": d["temperature_2m_min"],
         "Pioggia (mm)": d["precipitation_sum"],
         "ET0 (mm)": d["et0_fao_evapotranspiration"],
+        "Vento Max (km/h)": d["wind_speed_10m_max"],
     })
-
-# Stato standard temporaneo
-risk_level = "NORMALE 🟢"
-risk_description = "Condizioni stabili monitorate tramite Open-Meteo (Modello ICON)."
 
 # --- METRIC CARDS ---
 col1, col2, col3 = st.columns(3)
@@ -403,36 +443,41 @@ col1.metric(
     "Ottimo" if (last_ndvi and last_ndvi > 0.5) else "Sotto controllo",
 )
 
-col2.metric("🛡️ Stato Fitosanitario", risk_level)
+col2.metric("🛡️ Stato Fitosanitario & Meteo", risk_level)
 
 rain_sum = sum(w_data["daily"]["precipitation_sum"][:7]) if w_data and "daily" in w_data else 0.0
 col3.metric("🌧️ Pioggia 7gg (ICON 2.2km)", f"{rain_sum:.1f} mm")
 
-st.info(f"💡 **Nota Sistema**: {risk_description}")
+st.info(f"💡 **Diagnosi DSS**: {risk_description}")
 
 st.markdown("---")
 
-# --- PANNELLO DI DEBUG METEO & API (Per verificare il modello a 2.2km) ---
-with st.expander("🛠️ Pannello di Debug API Meteo (Verifica Modello ICON-D2)"):
-    st.write("Questo pannello mostra i dati grezzi ricevuti dai server Open-Meteo per confermare il corretto funzionamento delle coordinate e del modello.")
+# --- PANNELLO DI DEBUG METEO & API (Verifica Modello ICON-D2 e set completo) ---
+with st.expander("🛠️ Pannello di Debug API Meteo & Set Dati (ICON-D2 2.2km)"):
+    st.write("Verifica dei parametri scaricati dal modello ad alta risoluzione (inclusi umidità, vento, CAPE e suolo).")
     st.write(f"**Coordinate attive:** Lat `{st.session_state.active_lat}` | Lon `{st.session_state.active_lon}`")
-    st.write(f"**Endpoint utilizzato:** `models=icon_seamless` (alta risoluzione 2.2 km)")
     if w_data:
         st.success("Connessione API riuscita con successo!")
-        st.json({
-            "latitude": w_data.get("latitude"),
-            "longitude": w_data.get("longitude"),
-            "timezone": w_data.get("timezone"),
-            "has_convective_storm_flag": w_data.get("has_convective_storm"),
-            "elevation": w_data.get("elevation")
-        })
+        # Mostriamo un estratto orario recente per debugging
+        hourly_sample = {}
+        if "hourly" in w_data:
+            h = w_data["hourly"]
+            hourly_sample = {
+                "time_sample": h.get("time", [])[:5],
+                "temperature_2m": h.get("temperature_2m", [])[:5],
+                "relative_humidity_2m": h.get("relative_humidity_2m", [])[:5],
+                "wind_gusts_10m": h.get("wind_gusts_10m", [])[:5],
+                "cape": h.get("cape", [])[:5],
+                "soil_moisture_0_to_7cm": h.get("soil_moisture_0_to_7cm", [])[:5]
+            }
+        st.json(hourly_sample)
     else:
         st.error("Errore: Nessun dato ricevuto dall'API Open-Meteo.")
 
 st.markdown("---")
 
-# --- SEZIONE: HUB BOLLETTINI FITOSANITARI REGIONALI & ARPA (Link Corretti) ---
-st.subheader("📰 Bollettini Fitosanitari & Portali ARPA Ufficiali")
+# --- SEZIONE: HUB BOLLETTINI FITOSANITARI & PORTALE REGIONALE (Pulito) ---
+st.subheader("📰 Bollettini Fitosanitari & Portale Regionale Ufficiale")
 
 real_bulletin = fetch_real_bulletin()
 
@@ -441,13 +486,8 @@ st.markdown(f"""
         <h4>📌 {real_bulletin['title']}</h4>
         <p>{real_bulletin['desc']}</p>
         <div style="margin-top: 10px;">
-            <b>🏛️ Link Utili e Servizi Regionali / Nazionali Verificati:</b><br>
-            <a href="https://www.regione.toscana.it/-/servizio-fitosanitario-regionale" target="_blank" class="portal-link">Regione Toscana (Fitosanitario)</a>
-            <a href="https://www.regione.umbria.it/agricoltura/servizio-fitosanitario" target="_blank" class="portal-link">Regione Umbria (Fitosanitario)</a>
-            <a href="https://www.arpalazio.it/" target="_blank" class="portal-link">ARPA Lazio</a>
-            <a href="https://www.arpa.veneto.it/" target="_blank" class="portal-link">ARPA Veneto</a>
-            <a href="https://www.arpa.piemonte.it/" target="_blank" class="portal-link">ARPA Piemonte</a>
-            <a href="https://www.sian.it" target="_blank" class="portal-link">Portale SIAN</a>
+            <b>🏛️ Portali Istituzionali di Riferimento:</b><br>
+            <a href="https://www.sian.it" target="_blank" class="portal-link">Portale Nazionale SIAN</a>
             <a href="{real_bulletin['link']}" target="_blank" class="portal-link" style="border-color: #d32f2f; color: #d32f2f;">News Fitosanitarie Nazionali</a>
         </div>
     </div>
@@ -518,17 +558,20 @@ if map_data and map_data.get("last_clicked"):
         st.rerun()
 
 
-# --- GENERATORE ALLERTA WHATSAPP ---
+# --- GENERATORE ALLERTA WHATSAPP (Con supporto automatico per grandine/gelate) ---
 with st.expander("📱 Genera Allerta WhatsApp per Agricoltori (Test 1-Click)"):
-    st.caption("Crea il messaggio da inviare all'agricoltore per il campo attivo.")
+    st.caption("Crea il messaggio personalizzato da inviare via WhatsApp per il campo attivo.")
 
     wa_crop = st.session_state.active_crop
     wa_field = st.session_state.active_field_name
 
+    # Se c'è un'allerta automatica pendente, la usiamo come base per il messaggio
+    default_msg_content = risk_description if pending_alert else "Condizioni stabili. Verifica lo stato colturale."
+
     msg_template = (
         f"Ciao! 🌾 Aggiornamento dal campo '{wa_field}' ({wa_crop}).\n"
-        f"Controlla i bollettini fitosanitari regionali e verifica lo stato colturale.\n"
-        f"Rispondi se ci sono anomalie."
+        f"{default_msg_content}\n"
+        f"Controlla i bollettini ufficiali e rispondi se ci sono anomalie."
     )
 
     st.markdown("**Anteprima Messaggio WhatsApp:**")
@@ -539,6 +582,13 @@ with st.expander("📱 Genera Allerta WhatsApp per Agricoltori (Test 1-Click)"):
             </div>
         </div>
     """, unsafe_allow_html=True)
+
+    # Se c'è un'allerta automatica, offri il tasto rapido per salvarla nel DB delle allerte
+    if pending_alert:
+        if st.button("🚨 Registra questa Allerta nel Database Storico"):
+            add_alert(pending_alert["type"], pending_alert["desc"], st.session_state.active_lat, st.session_state.active_lon)
+            st.success("Allerta salvata con successo!")
+            st.rerun()
 
     encoded_msg = urllib.parse.quote(msg_template)
     wa_url = f"https://wa.me/?text={encoded_msg}"
