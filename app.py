@@ -1,7 +1,9 @@
 import io
 import json
+import re
 import sqlite3
 import urllib.parse
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 import folium
 import pandas as pd
@@ -26,7 +28,7 @@ css_custom = """
     div[data-testid="stStatusWidget"] {visibility: hidden;}
     [data-testid="stSidebarCollapseButton"] {visibility: visible !important; z-index: 1000;}
     .block-container {padding-top: 1.5rem; padding-bottom: 1.5rem;}
-    .bulletin-card {background-color: #f0f7f4; border-left: 5px solid #2e7d32; padding: 12px; margin-bottom: 15px; border-radius: 4px;}
+    .bulletin-card {background-color: #f0f7f4; border-left: 5px solid #2e7d32; padding: 15px; margin-bottom: 15px; border-radius: 6px;}
     .wa-preview {background-color: #e5ddd5; border-radius: 8px; padding: 12px; font-family: sans-serif; color: #111; margin-top: 10px;}
     .wa-bubble {background-color: #dcf8c6; padding: 8px 12px; border-radius: 7.5px; margin-bottom: 5px; font-size: 14px;}
     </style>
@@ -50,50 +52,10 @@ def init_db():
                      (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, alert_type TEXT, description TEXT, lat REAL, lon REAL)""")
         c.execute("""CREATE TABLE IF NOT EXISTS fields 
                      (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, crop TEXT, lat REAL, lon REAL)""")
-
-        # NUOVA TABELLA: Bollettini Fitosanitari Regionale
-        c.execute("""CREATE TABLE IF NOT EXISTS bulletins 
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, region TEXT, crop TEXT, title TEXT, content TEXT, priority TEXT)""")
-
         conn.commit()
 
 
 init_db()
-
-
-def seed_bulletins_if_empty():
-    """Popola con un bollettino regionale di esempio se il DB è vuoto"""
-    with get_db_connection() as conn:
-        c = conn.cursor()
-        c.execute("SELECT count(*) FROM bulletins")
-        if c.fetchone()[0] == 0:
-            today = datetime.now().strftime("%Y-%m-%d")
-            c.execute(
-                "INSERT INTO bulletins (date, region, crop, title, content, priority) VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    today,
-                    "Umbria / Toscana",
-                    "Oliveto",
-                    "Bollettino Fitosanitario Mosca dell'Olivo",
-                    "Rilevato aumento volo adulti e prime deposizioni. Monitorare le trappole cromatiche/chemiotropiche. Soglia di intervento: 2-3% di infestazione attiva sulle olive da olio.",
-                    "ALTO",
-                ),
-            )
-            c.execute(
-                "INSERT INTO bulletins (date, region, crop, title, content, priority) VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    today,
-                    "Umbria / Toscana",
-                    "Vigneto",
-                    "Bollettino Fitosanitario Peronospora e Oidio",
-                    "Pressioni infettive elevate nelle zone collinari dopo le ultime piogge locali. Mantenere coperture preventive sulle varietà sensibili.",
-                    "MEDIO",
-                ),
-            )
-            conn.commit()
-
-
-seed_bulletins_if_empty()
 
 
 def save_field(name, crop, lat, lon):
@@ -161,48 +123,45 @@ def get_alerts():
         )
 
 
-def get_bulletins(crop=None):
-    with get_db_connection() as conn:
-        if crop:
-            return pd.read_sql(
-                "SELECT date, region, crop, title, content, priority FROM bulletins WHERE crop = ? ORDER BY id DESC",
-                conn,
-                params=(crop,),
-            )
-        return pd.read_sql(
-            "SELECT date, region, crop, title, content, priority FROM bulletins ORDER BY id DESC",
-            conn,
-        )
-
-
-# --- API METEO CON CORREZIONE PIOGGIA (BIAS CORRECTION / RADAR LOGIC) ---
+# --- API METEO AD ALTA RISOLUZIONE (ICON-D2 2.2km per orografia/temporali) ---
 @st.cache_data(ttl=1800)
 def fetch_weather_advanced(lat, lon):
-    # Richiediamo dati orari aggiuntivi sulle precipitazioni per intercettare i temporali estivi
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,et0_fao_evapotranspiration,wind_speed_10m_max&hourly=precipitation,relative_humidity_2m,soil_moisture_0_to_7cm&past_days=7&timezone=Europe/Berlin"
+    # Usa il modello ICON-D2 (2.2km) per catturare i temporali convettivi estivi isolati
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,et0_fao_evapotranspiration,wind_speed_10m_max&hourly=precipitation,relative_humidity_2m,soil_moisture_0_to_7cm&past_days=7&timezone=Europe/Berlin&models=icon_d2"
     try:
         res = requests.get(url, timeout=10)
         if res.status_code == 200:
-            data = res.json()
+            return res.json()
+    except Exception:
+        pass
+    return None
 
-            # --- CORREZIONE BIAS TEMPORALI LOCALIZZATI ---
-            # Se nei dati orari passati c'è un picco concentrato ma la somma daily è bassa per sottostima,
-            # applichiamo la correzione automatica della stima pluviometrica.
-            if "hourly" in data and "precipitation" in data["hourly"]:
-                hourly_precip = data["hourly"]["precipitation"]
-                max_hourly_peak = (
-                    max(hourly_precip) if hourly_precip else 0.0
-                )
 
-                # Se rileviamo un rovescio intenso orario (> 10 mm/h), applichiamo il fattore orografico
-                if max_hourly_peak > 8.0:
-                    data["bias_correction_applied"] = True
-                    data["bias_note"] = (
-                        f"Rilevato evento temporalesco locale ({max_hourly_peak} mm/h). "
-                        "Corretto fattore di accumulo orografico."
-                    )
+# --- LETTURA AUTOMATICA BOLLETTINO FITOSANITARIO REALE (RSS) ---
+@st.cache_data(ttl=3600)
+def fetch_real_bulletin():
+    rss_url = "https://agronotizie.imagelinenetwork.com/rss/difesa-e-diserbo.xml"
+    try:
+        res = requests.get(rss_url, timeout=10)
+        if res.status_code == 200:
+            root = ET.fromstring(res.content)
+            item = root.find('.//item')
+            if item is not None:
+                title_elem = item.find('title')
+                link_elem = item.find('link')
+                desc_elem = item.find('description')
 
-            return data
+                title = title_elem.text if title_elem is not None else "Bollettino Fitosanitario"
+                link = link_elem.text if link_elem is not None else "#"
+                desc_raw = desc_elem.text if desc_elem is not None else ""
+
+                desc_clean = re.sub('<[^<]+?>', '', desc_raw)  # Pulizia HTML
+
+                return {
+                    "title": title,
+                    "link": link,
+                    "desc": desc_clean[:350] + "..." if len(desc_clean) > 350 else desc_clean,
+                }
     except Exception:
         pass
     return None
@@ -484,7 +443,7 @@ col1.metric(
     "Ottimo" if (last_ndvi and last_ndvi > 0.5) else "Sotto controllo",
 )
 
-# Calcolo del livello di rischio basato su coltura e meteo
+# Calcolo del livello di rischio basato su coltura e meteo (con modello ICON-D2 ad alta risoluzione)
 risk_level = "BASSO 🟢"
 risk_color = "green"
 
@@ -511,32 +470,30 @@ rain_sum = (
     if w_data and "daily" in w_data
     else 0.0
 )
-col3.metric("🌧️ Pioggia Ultimi 7gg", f"{rain_sum:.1f} mm")
-
-if w_data and w_data.get("bias_correction_applied"):
-    st.info(f"ℹ️ **Correzione Meteo Attiva:** {w_data.get('bias_note')}")
+col3.metric("🌧️ Pioggia Ultimi 7gg (ICON-D2)", f"{rain_sum:.1f} mm")
 
 st.markdown("---")
 
-# --- NUOVA SEZIONE: BOLLETTINO FITOSANITARIO REGIONALE ---
-st.subheader("📰 Bollettino Fitosanitario Regionale")
-bulletins_df = get_bulletins(st.session_state.active_crop)
+# --- SEZIONE: BOLLETTINO FITOSANITARIO REALE (AUTOMATICO) ---
+st.subheader("📰 Bollettino Fitosanitario In Tempo Reale")
+real_bulletin = fetch_real_bulletin()
 
-if not bulletins_df.empty:
-    b_latest = bulletins_df.iloc[0]
+if real_bulletin and "title" in real_bulletin:
     st.markdown(f"""
         <div class="bulletin-card">
-            <h4>📌 {b_latest['title']} ({b_latest['region']}) - <small>{b_latest['date']}</small></h4>
-            <p>{b_latest['content']}</p>
-            <b>Priorità Regionale:</b> <span style="color:red;">{b_latest['priority']}</span>
+            <h4>📌 {real_bulletin['title']}</h4>
+            <p>{real_bulletin['desc']}</p>
+            🔗 <a href="{real_bulletin['link']}" target="_blank" style="color: #2e7d32; font-weight: bold;">
+                Leggi l'avviso ufficiale completo
+            </a>
         </div>
     """, unsafe_allow_html=True)
 else:
-    st.caption("Nessun bollettino specifico per questa coltura.")
+    st.caption("Servizio bollettini fitosanitari temporaneamente non disponibile.")
 
 st.markdown("---")
 
-# --- MAPPA INTERATTIVA CON RETINO TRASPARENTE (AREE DI RISCHIO) ---
+# --- MAPPA INTERATTIVA CON RETINO TRASPARENTE DINAMICO ---
 st.subheader("🗺️ Mappa Territoriale & Retino di Rischio")
 
 m = folium.Map(
@@ -552,9 +509,8 @@ folium.Marker(
 ).add_to(m)
 
 # --- RETINO TRASPARENTE (POLIGONO DI RISCHIO PATOGENO/PARASSITA) ---
-# Creiamo un poligono vettoriale trasparente attorno al campo attivo se il rischio è elevato/medio
 lat_c, lon_c = st.session_state.active_lat, st.session_state.active_lon
-delta_lat, delta_lon = 0.012, 0.018  # Copertura indicativa dell'area comunale
+delta_lat, delta_lon = 0.012, 0.018
 
 polygon_coords = [
     [lat_c + delta_lat, lon_c - delta_lon],
@@ -563,6 +519,7 @@ polygon_coords = [
     [lat_c - delta_lat, lon_c - delta_lon],
 ]
 
+# Il colore del retino della zona si adatta in base al rischio calcolato
 fill_c = (
     "#ff4d4d"
     if "ELEVATO" in risk_level
@@ -577,7 +534,7 @@ folium.Polygon(
     weight=2,
     fill=True,
     fill_color=fill_c,
-    fill_opacity=0.35,  # Retino trasparente che mostra le mappe sottostanti
+    fill_opacity=0.35,
     popup=f"<b>Zona a Retino di Rischio:</b> {risk_level}<br>Coltura: {st.session_state.active_crop}",
 ).add_to(m)
 
@@ -614,7 +571,7 @@ if map_data and map_data.get("last_clicked"):
         st.rerun()
 
 
-# --- NUOVA SEZIONE: GENERATORE ALLERTA WHATSAPP ---
+# --- GENERATORE ALLERTA WHATSAPP ---
 with st.expander("📱 Genera Allerta WhatsApp per Agricoltori (Test 1-Click)"):
     st.caption(
         "Crea il messaggio telegrafico da inviare all'agricoltore per validare l'intervento sul campo."
@@ -686,7 +643,7 @@ with t_meteo:
     if not df_meteo.empty:
         st.dataframe(df_meteo, use_container_width=True, hide_index=True)
 
-# --- ESPORTAZIONE UNIFICATA REPORT (METEO + SATELLITE) ---
+# --- ESPORTAZIONE UNIFICATA REPORT ---
 st.markdown("#### 📥 Esporta Report Storico (Meteo + Satellite)")
 exp_col1, exp_col2 = st.columns(2)
 
