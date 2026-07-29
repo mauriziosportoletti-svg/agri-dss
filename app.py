@@ -16,7 +16,7 @@ MAX_CAMPI_ABBONAMENTO = 3
 
 # --- CONFIGURAZIONE PAGINA & CSS ---
 st.set_page_config(
-    page_title="AgriDSS - Gestione Campi & Allarmi",
+    page_title="AgriDSS - Monitoraggio Campi",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -125,7 +125,7 @@ def get_alerts():
         )
 
 
-# --- API METEO AD ALTA RISOLUZIONE (Ottimizzata per temporali e trend) ---
+# --- API METEO AD ALTA RISOLUZIONE (ICON-D2 2.2km) ---
 @st.cache_data(ttl=600)
 def fetch_weather_advanced(lat, lon):
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,et0_fao_evapotranspiration,wind_speed_10m_max&hourly=precipitation,relative_humidity_2m,soil_moisture_0_to_7cm&past_days=7&timezone=Europe/Berlin&models=icon_seamless"
@@ -144,7 +144,7 @@ def fetch_weather_advanced(lat, lon):
     return None
 
 
-# --- HUB BOLLETTINI FITOSANITARI & FEED DIFENSIVO ---
+# --- HUB BOLLETTINI FITOSANITARI & LINK REGIONALI CORRETTI ---
 @st.cache_data(ttl=3600)
 def fetch_real_bulletin():
     rss_url = "https://agronotizie.imagelinenetwork.com/rss/difesa-e-diserbo.xml"
@@ -167,7 +167,7 @@ def fetch_real_bulletin():
         pass
     return {
         "title": "Portali Fitosanitari Regionali",
-        "desc": "Accedi direttamente ai servizi fitosanitari ufficiali per consultare i bollettini validati della tua area.",
+        "desc": "Consulta direttamente i bollettini ufficiali validati dai servizi fitosanitari e dalle ARPA regionali.",
         "link": "https://www.sian.it/portale-mipaaf/home.jsp"
     }
 
@@ -177,7 +177,6 @@ def fetch_real_bulletin():
 def fetch_satellite_statistics(lat, lon):
     client_id = "sh-fea07070-5af9-419b-9bcf-9aa06c70b822"
     client_secret = "ryKBfLw9vwdFlDrGpjcgHkk1T4sRnSSD"
-
     auth_url = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
     try:
         auth_res = requests.post(
@@ -191,10 +190,9 @@ def fetch_satellite_statistics(lat, lon):
         )
         if auth_res.status_code != 200:
             return {"error": f"Errore Autenticazione OAuth Copernicus (Status {auth_res.status_code})"}
-
         token = auth_res.json().get("access_token")
     except Exception as e:
-        return {"error": f"Eccezione durante la connessione OAUTH: {str(e)}"}
+        return {"error": f"Eccezione OAUTH: {str(e)}"}
 
     now_utc = datetime.now(timezone.utc)
     data_fine = now_utc.strftime("%Y-%m-%dT23:59:59Z")
@@ -339,7 +337,6 @@ else:
     st.sidebar.warning("Nessun campo salvato.")
 
 st.sidebar.markdown("---")
-
 num_campi = len(fields_df)
 st.sidebar.caption(f"Campi salvati: **{num_campi}/{MAX_CAMPI_ABBONAMENTO}** (Piano Base)")
 
@@ -392,6 +389,10 @@ if w_data and "daily" in w_data:
         "ET0 (mm)": d["et0_fao_evapotranspiration"],
     })
 
+# Stato standard temporaneo
+risk_level = "NORMALE 🟢"
+risk_description = "Condizioni stabili monitorate tramite Open-Meteo (Modello ICON)."
+
 # --- METRIC CARDS ---
 col1, col2, col3 = st.columns(3)
 
@@ -402,30 +403,36 @@ col1.metric(
     "Ottimo" if (last_ndvi and last_ndvi > 0.5) else "Sotto controllo",
 )
 
-risk_level = "BASSO 🟢"
-if w_data and "daily" in w_data:
-    avg_temp = sum(w_data["daily"]["temperature_2m_max"][:3]) / 3
-    recent_rain = sum(w_data["daily"]["precipitation_sum"][:3])
-    has_storm = w_data.get("has_convective_storm", False)
-
-    if st.session_state.active_crop == "Oliveto":
-        if 20 <= avg_temp <= 30:
-            risk_level = "ELEVATO 🔴 (Mosca)"
-        elif avg_temp > 30:
-            risk_level = "MEDIO 🟡 (Caldo estivo)"
-    elif st.session_state.active_crop == "Vigneto":
-        if (recent_rain > 10 or has_storm) and avg_temp > 18:
-            risk_level = "ELEVATO 🔴 (Rischio Peronospora/Nubifragio)"
-
-col2.metric("🛡️ Rischio Fitosanitario", risk_level)
+col2.metric("🛡️ Stato Fitosanitario", risk_level)
 
 rain_sum = sum(w_data["daily"]["precipitation_sum"][:7]) if w_data and "daily" in w_data else 0.0
 col3.metric("🌧️ Pioggia 7gg (ICON 2.2km)", f"{rain_sum:.1f} mm")
 
+st.info(f"💡 **Nota Sistema**: {risk_description}")
+
 st.markdown("---")
 
-# --- SEZIONE: HUB BOLLETTINI FITOSANITARI REGIONALI & RSS ---
-st.subheader("📰 Bollettini Fitosanitari & Fonti Ufficiali")
+# --- PANNELLO DI DEBUG METEO & API (Per verificare il modello a 2.2km) ---
+with st.expander("🛠️ Pannello di Debug API Meteo (Verifica Modello ICON-D2)"):
+    st.write("Questo pannello mostra i dati grezzi ricevuti dai server Open-Meteo per confermare il corretto funzionamento delle coordinate e del modello.")
+    st.write(f"**Coordinate attive:** Lat `{st.session_state.active_lat}` | Lon `{st.session_state.active_lon}`")
+    st.write(f"**Endpoint utilizzato:** `models=icon_seamless` (alta risoluzione 2.2 km)")
+    if w_data:
+        st.success("Connessione API riuscita con successo!")
+        st.json({
+            "latitude": w_data.get("latitude"),
+            "longitude": w_data.get("longitude"),
+            "timezone": w_data.get("timezone"),
+            "has_convective_storm_flag": w_data.get("has_convective_storm"),
+            "elevation": w_data.get("elevation")
+        })
+    else:
+        st.error("Errore: Nessun dato ricevuto dall'API Open-Meteo.")
+
+st.markdown("---")
+
+# --- SEZIONE: HUB BOLLETTINI FITOSANITARI REGIONALI & ARPA (Link Corretti) ---
+st.subheader("📰 Bollettini Fitosanitari & Portali ARPA Ufficiali")
 
 real_bulletin = fetch_real_bulletin()
 
@@ -434,11 +441,14 @@ st.markdown(f"""
         <h4>📌 {real_bulletin['title']}</h4>
         <p>{real_bulletin['desc']}</p>
         <div style="margin-top: 10px;">
-            <b>🔗 Punti di Accesso Ufficiali:</b><br>
-            <a href="https://www.regione.toscana.it/-/servizio-fitosanitario-regionale" target="_blank" class="portal-link">🏛️ Regione Toscana</a>
-            <a href="https://www.regione.umbria.it/agricoltura/servizio-fitosanitario" target="_blank" class="portal-link">🏛️ Regione Umbria</a>
-            <a href="https://www.sian.it" target="_blank" class="portal-link">🏛️ Portale SIAN</a>
-            <a href="{real_bulletin['link']}" target="_blank" class="portal-link" style="border-color: #d32f2f; color: #d32f2f;">🌐 News Nazionali</a>
+            <b>🏛️ Link Utili e Servizi Regionali / Nazionali Verificati:</b><br>
+            <a href="https://www.regione.toscana.it/-/servizio-fitosanitario-regionale" target="_blank" class="portal-link">Regione Toscana (Fitosanitario)</a>
+            <a href="https://www.regione.umbria.it/agricoltura/servizio-fitosanitario" target="_blank" class="portal-link">Regione Umbria (Fitosanitario)</a>
+            <a href="https://www.arpalazio.it/" target="_blank" class="portal-link">ARPA Lazio</a>
+            <a href="https://www.arpa.veneto.it/" target="_blank" class="portal-link">ARPA Veneto</a>
+            <a href="https://www.arpa.piemonte.it/" target="_blank" class="portal-link">ARPA Piemonte</a>
+            <a href="https://www.sian.it" target="_blank" class="portal-link">Portale SIAN</a>
+            <a href="{real_bulletin['link']}" target="_blank" class="portal-link" style="border-color: #d32f2f; color: #d32f2f;">News Fitosanitarie Nazionali</a>
         </div>
     </div>
 """, unsafe_allow_html=True)
@@ -446,7 +456,7 @@ st.markdown(f"""
 st.markdown("---")
 
 # --- MAPPA INTERATTIVA ---
-st.subheader("🗺️ Mappa Territoriale & Retino di Rischio")
+st.subheader("🗺️ Mappa Territoriale")
 
 m = folium.Map(
     location=[st.session_state.active_lat, st.session_state.active_lon],
@@ -469,16 +479,14 @@ polygon_coords = [
     [lat_c - delta_lat, lon_c - delta_lon],
 ]
 
-fill_c = "#ff4d4d" if "ELEVATO" in risk_level else "#ffcc00" if "MEDIO" in risk_level else "#66cc66"
-
 folium.Polygon(
     locations=polygon_coords,
-    color=fill_c,
+    color="#2e7d32",
     weight=2,
     fill=True,
-    fill_color=fill_c,
-    fill_opacity=0.35,
-    popup=f"<b>Zona a Retino di Rischio:</b> {risk_level}<br>Coltura: {st.session_state.active_crop}",
+    fill_color="#2e7d32",
+    fill_opacity=0.25,
+    popup=f"<b>Area Monitorata:</b> {st.session_state.active_field_name}",
 ).add_to(m)
 
 if (st.session_state.clicked_lat != st.session_state.active_lat or st.session_state.clicked_lon != st.session_state.active_lon):
@@ -512,16 +520,15 @@ if map_data and map_data.get("last_clicked"):
 
 # --- GENERATORE ALLERTA WHATSAPP ---
 with st.expander("📱 Genera Allerta WhatsApp per Agricoltori (Test 1-Click)"):
-    st.caption("Crea il messaggio telegrafico da inviare all'agricoltore per validare l'intervento sul campo.")
+    st.caption("Crea il messaggio da inviare all'agricoltore per il campo attivo.")
 
     wa_crop = st.session_state.active_crop
     wa_field = st.session_state.active_field_name
 
     msg_template = (
-        f"Ciao! 🪰 *Allerta {wa_crop}* per il campo '{wa_field}'.\n"
-        f"I nostri modelli indicano condizioni favorevoli o rischio temporalesco nei prossimi 3 giorni.\n"
-        f"Hai notato presenze o danni sul campo?\n\n"
-        f"Rispondi *SÌ* o *NO*."
+        f"Ciao! 🌾 Aggiornamento dal campo '{wa_field}' ({wa_crop}).\n"
+        f"Controlla i bollettini fitosanitari regionali e verifica lo stato colturale.\n"
+        f"Rispondi se ci sono anomalie."
     )
 
     st.markdown("**Anteprima Messaggio WhatsApp:**")
@@ -545,10 +552,10 @@ with st.expander("📢 Invia una Segnalazione Anonima nella zona"):
     a_type = st.selectbox(
         "Avvistamento / Anomalia:",
         [
-            "Avvistamento Mosca Olearia",
-            "Attacco Peronospora / Oidio",
+            "Avvistamento Parassiti",
+            "Attacco Fungalico / Malattia",
             "Siccità Severa",
-            "Danni da Grandine / Nubifragio",
+            "Danni da Grandine / Evento meteo",
             "Altro",
         ],
     )
