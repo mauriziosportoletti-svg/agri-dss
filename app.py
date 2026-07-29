@@ -51,9 +51,9 @@ def init_db():
         c.execute("""CREATE TABLE IF NOT EXISTS fields 
                      (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, crop TEXT, lat REAL, lon REAL)""")
 
-        # NUOVA TABELLA: Bollettini Fitosanitari Regionale
+        # TABELLA BOLLETTINI CON CAMPO URL PER LINK UFFICIALE
         c.execute("""CREATE TABLE IF NOT EXISTS bulletins 
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, region TEXT, crop TEXT, title TEXT, content TEXT, priority TEXT)""")
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, region TEXT, crop TEXT, title TEXT, content TEXT, priority TEXT, url TEXT)""")
 
         conn.commit()
 
@@ -69,25 +69,27 @@ def seed_bulletins_if_empty():
         if c.fetchone()[0] == 0:
             today = datetime.now().strftime("%Y-%m-%d")
             c.execute(
-                "INSERT INTO bulletins (date, region, crop, title, content, priority) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO bulletins (date, region, crop, title, content, priority, url) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     today,
-                    "Umbria / Toscana",
+                    "Umbria",
                     "Oliveto",
                     "Bollettino Fitosanitario Mosca dell'Olivo",
-                    "Rilevato aumento volo adulti e prime deposizioni. Monitorare le trappole cromatiche/chemiotropiche. Soglia di intervento: 2-3% di infestazione attiva sulle olive da olio.",
+                    "Rilevato aumento volo adulti e prime deposizioni. Monitorare le trappole cromatiche. Soglia di intervento: 2-3% di infestazione attiva.",
                     "ALTO",
+                    "https://www.regione.umbria.it/agricoltura/bollettini-fitosanitari",
                 ),
             )
             c.execute(
-                "INSERT INTO bulletins (date, region, crop, title, content, priority) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO bulletins (date, region, crop, title, content, priority, url) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     today,
-                    "Umbria / Toscana",
+                    "Toscana",
                     "Vigneto",
                     "Bollettino Fitosanitario Peronospora e Oidio",
-                    "Pressioni infettive elevate nelle zone collinari dopo le ultime piogge locali. Mantenere coperture preventive sulle varietà sensibili.",
+                    "Pressioni infettive elevate nelle zone collinari e montane dopo i recenti temporali. Mantenere coperture preventive.",
                     "MEDIO",
+                    "https://www.cfr.toscana.it",
                 ),
             )
             conn.commit()
@@ -165,41 +167,66 @@ def get_bulletins(crop=None):
     with get_db_connection() as conn:
         if crop:
             return pd.read_sql(
-                "SELECT date, region, crop, title, content, priority FROM bulletins WHERE crop = ? ORDER BY id DESC",
+                "SELECT date, region, crop, title, content, priority, url FROM bulletins WHERE crop = ? ORDER BY id DESC",
                 conn,
                 params=(crop,),
             )
         return pd.read_sql(
-            "SELECT date, region, crop, title, content, priority FROM bulletins ORDER BY id DESC",
+            "SELECT date, region, crop, title, content, priority, url FROM bulletins ORDER BY id DESC",
             conn,
         )
 
 
-# --- API METEO CON CORREZIONE PIOGGIA (BIAS CORRECTION / RADAR LOGIC) ---
+# --- API METEO AD ALTA RISOLUZIONE (ICON-EU) CON RICALCOLO PIOGGIA ORARIA ---
 @st.cache_data(ttl=1800)
 def fetch_weather_advanced(lat, lon):
-    # Richiediamo dati orari aggiuntivi sulle precipitazioni per intercettare i temporali estivi
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,et0_fao_evapotranspiration,wind_speed_10m_max&hourly=precipitation,relative_humidity_2m,soil_moisture_0_to_7cm&past_days=7&timezone=Europe/Berlin"
+    # Usiamo il modello ICON-EU (DWD) ad alta risoluzione locale per intercettare i temporali orografici
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,et0_fao_evapotranspiration,wind_speed_10m_max&hourly=precipitation,relative_humidity_2m,soil_moisture_0_to_7cm&past_days=7&timezone=Europe/Berlin&models=icon_eu"
     try:
         res = requests.get(url, timeout=10)
         if res.status_code == 200:
             data = res.json()
 
-            # --- CORREZIONE BIAS TEMPORALI LOCALIZZATI ---
-            # Se nei dati orari passati c'è un picco concentrato ma la somma daily è bassa per sottostima,
-            # applichiamo la correzione automatica della stima pluviometrica.
-            if "hourly" in data and "precipitation" in data["hourly"]:
-                hourly_precip = data["hourly"]["precipitation"]
-                max_hourly_peak = (
-                    max(hourly_precip) if hourly_precip else 0.0
-                )
+            # --- RICALCOLO EFFETTIVO PIOGGIA DA DATI ORARI (Cattura i picchi) ---
+            if (
+                "hourly" in data
+                and "precipitation" in data["hourly"]
+                and "daily" in data["daily"]
+            ):
+                hourly_p = data["hourly"]["precipitation"]
+                hourly_times = data["hourly"]["time"]
 
-                # Se rileviamo un rovescio intenso orario (> 10 mm/h), applichiamo il fattore orografico
-                if max_hourly_peak > 8.0:
+                # Ricostruiamo le somme giornaliere sommando i singoli intervalli orari
+                daily_recalculated = {}
+                for t, p in zip(hourly_times, hourly_p):
+                    day_str = t.split("T")[0]
+                    daily_recalculated[day_str] = daily_recalculated.get(
+                        day_str, 0.0
+                    ) + (p or 0.0)
+
+                # Sovrascriviamo la pioggia giornaliera se la somma oraria rileva un temporale non visto dal modello standard
+                new_precip_sum = []
+                bias_applied = False
+                for idx, day_date in enumerate(data["daily"]["time"]):
+                    raw_daily = data["daily"]["precipitation_sum"][idx] or 0.0
+                    recalc_daily = round(
+                        daily_recalculated.get(day_date, 0.0), 1
+                    )
+
+                    if recalc_daily > raw_daily:
+                        bias_applied = True
+
+                    # Prendiamo il valore più alto tra la stima grezza e la somma oraria
+                    real_val = max(raw_daily, recalc_daily)
+                    new_precip_sum.append(real_val)
+
+                # Aggiorniamo direttamente i dati per metriche e tabelle
+                data["daily"]["precipitation_sum"] = new_precip_sum
+
+                if bias_applied:
                     data["bias_correction_applied"] = True
                     data["bias_note"] = (
-                        f"Rilevato evento temporalesco locale ({max_hourly_peak} mm/h). "
-                        "Corretto fattore di accumulo orografico."
+                        "Ricalcolata l'accumulazione di pioggia integrando i picchi orari a risoluzione fine (ICON-EU)."
                     )
 
             return data
@@ -212,7 +239,7 @@ def fetch_weather_advanced(lat, lon):
 @st.cache_data(ttl=3600)
 def fetch_satellite_statistics(lat, lon):
     client_id = "sh-fea07070-5af9-419b-9bcf-9aa06c70b822"
-    client_secret = "ryKBfLw9vwdFlDrGpjcgHkk1T4sRnSSD"
+    client_secret = "ryKBfLw9vwdFlDrGpst"  # Sostituire con la chiave valida se scaduta
 
     auth_url = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
     try:
@@ -518,19 +545,36 @@ if w_data and w_data.get("bias_correction_applied"):
 
 st.markdown("---")
 
-# --- NUOVA SEZIONE: BOLLETTINO FITOSANITARIO REGIONALE ---
-st.subheader("📰 Bollettino Fitosanitario Regionale")
+# --- SEZIONE: BOLLETTINO FITOSANITARIO REGIONALE CON LINK ---
+st.subheader("📰 Bollettino Fitosanitario Regionale Ufficiale")
 bulletins_df = get_bulletins(st.session_state.active_crop)
 
 if not bulletins_df.empty:
     b_latest = bulletins_df.iloc[0]
-    st.markdown(f"""
+    url_val = (
+        b_latest["url"]
+        if "url" in b_latest and pd.notna(b_latest["url"])
+        else ""
+    )
+    link_html = (
+        f'<a href="{url_val}" target="_blank" style="background-color:#2e7d32; color:white; padding:6px 12px; text-decoration:none; border-radius:4px; font-size:13px; font-weight:bold; display:inline-block; margin-top:8px;">🔗 Apri PDF / Bollettino Ufficiale</a>'
+        if url_val
+        else ""
+    )
+
+    st.markdown(
+        f"""
         <div class="bulletin-card">
             <h4>📌 {b_latest['title']} ({b_latest['region']}) - <small>{b_latest['date']}</small></h4>
             <p>{b_latest['content']}</p>
-            <b>Priorità Regionale:</b> <span style="color:red;">{b_latest['priority']}</span>
+            <div style="margin-top:8px;">
+                <b>Priorità Regionale:</b> <span style="color:red; margin-right:15px;">{b_latest['priority']}</span>
+                {link_html}
+            </div>
         </div>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
 else:
     st.caption("Nessun bollettino specifico per questa coltura.")
 
@@ -552,9 +596,8 @@ folium.Marker(
 ).add_to(m)
 
 # --- RETINO TRASPARENTE (POLIGONO DI RISCHIO PATOGENO/PARASSITA) ---
-# Creiamo un poligono vettoriale trasparente attorno al campo attivo se il rischio è elevato/medio
 lat_c, lon_c = st.session_state.active_lat, st.session_state.active_lon
-delta_lat, delta_lon = 0.012, 0.018  # Copertura indicativa dell'area comunale
+delta_lat, delta_lon = 0.012, 0.018
 
 polygon_coords = [
     [lat_c + delta_lat, lon_c - delta_lon],
@@ -577,7 +620,7 @@ folium.Polygon(
     weight=2,
     fill=True,
     fill_color=fill_c,
-    fill_opacity=0.35,  # Retino trasparente che mostra le mappe sottostanti
+    fill_opacity=0.35,
     popup=f"<b>Zona a Retino di Rischio:</b> {risk_level}<br>Coltura: {st.session_state.active_crop}",
 ).add_to(m)
 
@@ -614,7 +657,7 @@ if map_data and map_data.get("last_clicked"):
         st.rerun()
 
 
-# --- NUOVA SEZIONE: GENERATORE ALLERTA WHATSAPP ---
+# --- GENERATORE ALLERTA WHATSAPP ---
 with st.expander("📱 Genera Allerta WhatsApp per Agricoltori (Test 1-Click)"):
     st.caption(
         "Crea il messaggio telegrafico da inviare all'agricoltore per validare l'intervento sul campo."
