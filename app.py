@@ -29,6 +29,8 @@ css_custom = """
     [data-testid="stSidebarCollapseButton"] {visibility: visible !important; z-index: 1000;}
     .block-container {padding-top: 1.5rem; padding-bottom: 1.5rem;}
     .bulletin-card {background-color: #f0f7f4; border-left: 5px solid #2e7d32; padding: 15px; margin-bottom: 15px; border-radius: 6px;}
+    .portal-link {display: inline-block; background-color: #ffffff; border: 1px solid #2e7d32; color: #2e7d32; padding: 6px 12px; border-radius: 4px; font-weight: bold; text-decoration: none; margin-right: 8px; margin-top: 5px;}
+    .portal-link:hover {background-color: #2e7d32; color: white;}
     .wa-preview {background-color: #e5ddd5; border-radius: 8px; padding: 12px; font-family: sans-serif; color: #111; margin-top: 10px;}
     .wa-bubble {background-color: #dcf8c6; padding: 8px 12px; border-radius: 7.5px; margin-bottom: 5px; font-size: 14px;}
     </style>
@@ -123,11 +125,11 @@ def get_alerts():
         )
 
 
-# --- API METEO AD ALTA RISOLUZIONE (ICON-D2 2.2km per orografia/temporali) ---
+# --- API METEO AD ALTA RISOLUZIONE (ICON-SEAMLESS: 2.2km per Temporali + 7gg Storico) ---
 @st.cache_data(ttl=1800)
 def fetch_weather_advanced(lat, lon):
-    # Usa il modello ICON-D2 (2.2km) per catturare i temporali convettivi estivi isolati
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,et0_fao_evapotranspiration,wind_speed_10m_max&hourly=precipitation,relative_humidity_2m,soil_moisture_0_to_7cm&past_days=7&timezone=Europe/Berlin&models=icon_d2"
+    # 'icon_seamless' risolve l'errore 400 combinando ICON-D2 a maglia fine con lo storico a 7 giorni
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,et0_fao_evapotranspiration,wind_speed_10m_max&hourly=precipitation,relative_humidity_2m,soil_moisture_0_to_7cm&past_days=7&timezone=Europe/Berlin&models=icon_seamless"
     try:
         res = requests.get(url, timeout=10)
         if res.status_code == 200:
@@ -137,34 +139,34 @@ def fetch_weather_advanced(lat, lon):
     return None
 
 
-# --- LETTURA AUTOMATICA BOLLETTINO FITOSANITARIO REALE (RSS) ---
+# --- LETTURA AUTOMATICA BOLLETTINI & FEED DIFENSIVO ---
 @st.cache_data(ttl=3600)
 def fetch_real_bulletin():
     rss_url = "https://agronotizie.imagelinenetwork.com/rss/difesa-e-diserbo.xml"
     try:
-        res = requests.get(rss_url, timeout=10)
+        res = requests.get(rss_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
         if res.status_code == 200:
             root = ET.fromstring(res.content)
             item = root.find('.//item')
             if item is not None:
-                title_elem = item.find('title')
-                link_elem = item.find('link')
-                desc_elem = item.find('description')
+                title = item.findtext('title', default='Bollettino Fitosanitario')
+                link = item.findtext('link', default='#')
+                desc_raw = item.findtext('description', default='')
 
-                title = title_elem.text if title_elem is not None else "Bollettino Fitosanitario"
-                link = link_elem.text if link_elem is not None else "#"
-                desc_raw = desc_elem.text if desc_elem is not None else ""
-
-                desc_clean = re.sub('<[^<]+?>', '', desc_raw)  # Pulizia HTML
+                desc_clean = re.sub('<[^<]+?>', '', desc_raw)
 
                 return {
                     "title": title,
                     "link": link,
-                    "desc": desc_clean[:350] + "..." if len(desc_clean) > 350 else desc_clean,
+                    "desc": desc_clean[:300] + "..." if len(desc_clean) > 300 else desc_clean,
                 }
     except Exception:
         pass
-    return None
+    return {
+        "title": "Bollettini Fitosanitari Territoriali",
+        "desc": "Consulta i portali ufficiali regionali per i bollettini fitosanitari validati della tua area.",
+        "link": "https://www.sian.it/portale-mipaaf/home.jsp"
+    }
 
 
 # --- API SATELLITE (COPERNICUS SENTINEL-2) ---
@@ -185,9 +187,7 @@ def fetch_satellite_statistics(lat, lon):
             timeout=10,
         )
         if auth_res.status_code != 200:
-            return {
-                "error": f"Errore Autenticazione OAuth Copernicus (Status {auth_res.status_code})"
-            }
+            return {"error": f"Errore Autenticazione OAuth Copernicus (Status {auth_res.status_code})"}
 
         token = auth_res.json().get("access_token")
     except Exception as e:
@@ -200,9 +200,7 @@ def fetch_satellite_statistics(lat, lon):
 
     payload = {
         "input": {
-            "bounds": {
-                "bbox": [lon - delta, lat - delta, lon + delta, lat + delta]
-            },
+            "bounds": {"bbox": [lon - delta, lat - delta, lon + delta, lat + delta]},
             "data": [{"type": "sentinel-2-l2a"}],
         },
         "aggregation": {
@@ -238,9 +236,7 @@ def fetch_satellite_statistics(lat, lon):
         },
         "calculations": {
             "ndvi": {"statistics": {"default": {"percentiles": {"k": [10.0]}}}},
-            "msavi": {
-                "statistics": {"default": {"percentiles": {"k": [10.0]}}}
-            },
+            "msavi": {"statistics": {"default": {"percentiles": {"k": [10.0]}}}},
             "ndmi": {"statistics": {"default": {"percentiles": {"k": [10.0]}}}},
         },
     }
@@ -254,20 +250,13 @@ def fetch_satellite_statistics(lat, lon):
         if res.status_code == 200:
             return res.json()
         else:
-            return {
-                "error": f"Errore API Copernicus Statistics (Status {res.status_code}): {res.text}"
-            }
+            return {"error": f"Errore API Copernicus Statistics (Status {res.status_code})"}
     except Exception as e:
-        return {"error": f"Eccezione durante la richiesta Dati: {str(e)}"}
+        return {"error": f"Eccezione Dati: {str(e)}"}
 
 
 def parse_satellite_json(data):
-    if not data:
-        st.error("⚠️ Nessun dato ricevuto dal server.")
-        return pd.DataFrame()
-
-    if isinstance(data, dict) and "error" in data:
-        st.error(f"🔧 **DEBUG API:** {data['error']}")
+    if not data or (isinstance(data, dict) and "error" in data):
         return pd.DataFrame()
 
     records = []
@@ -277,18 +266,8 @@ def parse_satellite_json(data):
 
         def get_v(k):
             try:
-                val = (
-                    outputs.get(k, {})
-                    .get("bands", {})
-                    .get("B0", {})
-                    .get("stats", {})
-                    .get("mean")
-                )
-                return (
-                    float(val)
-                    if val is not None and str(val).lower() != "nan"
-                    else None
-                )
+                val = outputs.get(k, {}).get("bands", {}).get("B0", {}).get("stats", {}).get("mean")
+                return float(val) if val is not None and str(val).lower() != "nan" else None
             except Exception:
                 return None
 
@@ -302,11 +281,6 @@ def parse_satellite_json(data):
             })
 
     df = pd.DataFrame(records)
-    if df.empty:
-        st.info(
-            "ℹ️ API Copernicus collegata con successo, ma nessun passaggio satellitare privo di nuvole è presente negli ultimi 45 giorni su queste coordinate."
-        )
-
     return df.sort_values(by="Data", ascending=False) if not df.empty else df
 
 
@@ -329,6 +303,8 @@ if "clicked_lat" not in st.session_state:
     st.session_state.clicked_lat = st.session_state.active_lat
 if "clicked_lon" not in st.session_state:
     st.session_state.clicked_lon = st.session_state.active_lon
+if "last_registered_click" not in st.session_state:
+    st.session_state.last_registered_click = (st.session_state.active_lat, st.session_state.active_lon)
 
 
 # --- SIDEBAR: GESTIONE CAMPI ---
@@ -336,15 +312,9 @@ st.sidebar.title("🏡 I Miei Campi")
 
 if not fields_df.empty:
     options = fields_df["name"].tolist()
-    curr_idx = (
-        options.index(st.session_state.active_field_name)
-        if st.session_state.active_field_name in options
-        else 0
-    )
+    curr_idx = options.index(st.session_state.active_field_name) if st.session_state.active_field_name in options else 0
 
-    selected_field = st.sidebar.selectbox(
-        "Seleziona Campo da Analizzare:", options, index=curr_idx
-    )
+    selected_field = st.sidebar.selectbox("Seleziona Campo da Analizzare:", options, index=curr_idx)
 
     if selected_field != st.session_state.active_field_name:
         row = fields_df[fields_df["name"] == selected_field].iloc[0]
@@ -354,6 +324,7 @@ if not fields_df.empty:
         st.session_state.active_lon = row["lon"]
         st.session_state.clicked_lat = row["lat"]
         st.session_state.clicked_lon = row["lon"]
+        st.session_state.last_registered_click = (row["lat"], row["lon"])
         st.rerun()
 
     if st.sidebar.button(f"🗑️ Elimina '{selected_field}'"):
@@ -367,25 +338,17 @@ else:
 st.sidebar.markdown("---")
 
 num_campi = len(fields_df)
-st.sidebar.caption(
-    f"Campi salvati: **{num_campi}/{MAX_CAMPI_ABBONAMENTO}** (Piano Base)"
-)
+st.sidebar.caption(f"Campi salvati: **{num_campi}/{MAX_CAMPI_ABBONAMENTO}** (Piano Base)")
 
 if num_campi < MAX_CAMPI_ABBONAMENTO:
     st.sidebar.subheader("➕ Aggiungi Nuovo Campo")
     st.sidebar.info("👉 *Fai click sulla mappa per acquisire la posizione.*")
 
     new_name = st.sidebar.text_input("Nome Campo:")
-    new_crop = st.sidebar.selectbox(
-        "Coltura:", ["Oliveto", "Vigneto", "Seminativo", "Noccioleto", "Altro"]
-    )
+    new_crop = st.sidebar.selectbox("Coltura:", ["Oliveto", "Vigneto", "Seminativo", "Noccioleto", "Altro"])
 
-    saved_lat = st.sidebar.number_input(
-        "Latitudine:", value=st.session_state.clicked_lat, format="%.6f"
-    )
-    saved_lon = st.sidebar.number_input(
-        "Longitudine:", value=st.session_state.clicked_lon, format="%.6f"
-    )
+    saved_lat = st.sidebar.number_input("Latitudine:", value=st.session_state.clicked_lat, format="%.6f")
+    saved_lon = st.sidebar.number_input("Longitudine:", value=st.session_state.clicked_lon, format="%.6f")
 
     if st.sidebar.button("💾 Salva Campo"):
         if new_name:
@@ -394,6 +357,7 @@ if num_campi < MAX_CAMPI_ABBONAMENTO:
             st.session_state.active_crop = new_crop
             st.session_state.active_lat = saved_lat
             st.session_state.active_lon = saved_lon
+            st.session_state.last_registered_click = (saved_lat, saved_lon)
             st.sidebar.success("Campo aggiunto!")
             st.rerun()
         else:
@@ -409,12 +373,8 @@ st.caption(
 )
 
 # Fetch Dati
-w_data = fetch_weather_advanced(
-    st.session_state.active_lat, st.session_state.active_lon
-)
-sat_json = fetch_satellite_statistics(
-    st.session_state.active_lat, st.session_state.active_lon
-)
+w_data = fetch_weather_advanced(st.session_state.active_lat, st.session_state.active_lon)
+sat_json = fetch_satellite_statistics(st.session_state.active_lat, st.session_state.active_lon)
 df_sat = parse_satellite_json(sat_json)
 
 # Prepariamo la tabella meteo
@@ -432,18 +392,14 @@ if w_data and "daily" in w_data:
 # --- METRIC CARDS ---
 col1, col2, col3 = st.columns(3)
 
-last_ndvi = (
-    df_sat["NDVI"].iloc[0]
-    if (not df_sat.empty and "NDVI" in df_sat.columns)
-    else None
-)
+last_ndvi = df_sat["NDVI"].iloc[0] if (not df_sat.empty and "NDVI" in df_sat.columns) else None
 col1.metric(
     "🛰️ Indice Vigore (NDVI)",
     f"{last_ndvi:.2f}" if last_ndvi is not None else "N/D",
     "Ottimo" if (last_ndvi and last_ndvi > 0.5) else "Sotto controllo",
 )
 
-# Calcolo del livello di rischio basato su coltura e meteo (con modello ICON-D2 ad alta risoluzione)
+# Calcolo del livello di rischio basato su coltura e meteo (Modello ICON-Seamless ad altissima risoluzione)
 risk_level = "BASSO 🟢"
 risk_color = "green"
 
@@ -465,35 +421,33 @@ if w_data and "daily" in w_data:
 
 col2.metric("🛡️ Rischio Fitosanitario", risk_level)
 
-rain_sum = (
-    sum(w_data["daily"]["precipitation_sum"][:7])
-    if w_data and "daily" in w_data
-    else 0.0
-)
-col3.metric("🌧️ Pioggia Ultimi 7gg (ICON-D2)", f"{rain_sum:.1f} mm")
+rain_sum = sum(w_data["daily"]["precipitation_sum"][:7]) if w_data and "daily" in w_data else 0.0
+col3.metric("🌧️ Pioggia 7gg (ICON 2.2km)", f"{rain_sum:.1f} mm")
 
 st.markdown("---")
 
-# --- SEZIONE: BOLLETTINO FITOSANITARIO REALE (AUTOMATICO) ---
-st.subheader("📰 Bollettino Fitosanitario In Tempo Reale")
+# --- SEZIONE: HUB BOLLETTINI FITOSANITARI REGIONALI & RSS ---
+st.subheader("📰 Bollettini Fitosanitari & Fonti Ufficiali")
+
 real_bulletin = fetch_real_bulletin()
 
-if real_bulletin and "title" in real_bulletin:
-    st.markdown(f"""
-        <div class="bulletin-card">
-            <h4>📌 {real_bulletin['title']}</h4>
-            <p>{real_bulletin['desc']}</p>
-            🔗 <a href="{real_bulletin['link']}" target="_blank" style="color: #2e7d32; font-weight: bold;">
-                Leggi l'avviso ufficiale completo
-            </a>
+st.markdown(f"""
+    <div class="bulletin-card">
+        <h4>📌 {real_bulletin['title']}</h4>
+        <p>{real_bulletin['desc']}</p>
+        <div style="margin-top: 10px;">
+            <b>🔗 Portali Ufficiali Regionali (PDF e Avvisi):</b><br>
+            <a href="https://www.regione.toscana.it/servizio-fitosanitario" target="_blank" class="portal-link">🏛️ Toscana Fitosanitario</a>
+            <a href="https://www.regione.umbria.it/agricoltura/servizio-fitosanitario" target="_blank" class="portal-link">🏛️ Umbria Fitosanitario</a>
+            <a href="https://www.sian.it/portale-mipaaf/home.jsp" target="_blank" class="portal-link">🏛️ SIAN (Nazionale)</a>
+            <a href="{real_bulletin['link']}" target="_blank" class="portal-link" style="border-color: #d32f2f; color: #d32f2f;">🌐 Notizia Completa</a>
         </div>
-    """, unsafe_allow_html=True)
-else:
-    st.caption("Servizio bollettini fitosanitari temporaneamente non disponibile.")
+    </div>
+""", unsafe_allow_html=True)
 
 st.markdown("---")
 
-# --- MAPPA INTERATTIVA CON RETINO TRASPARENTE DINAMICO ---
+# --- MAPPA INTERATTIVA (FIXED LOOP RE-RENDER) ---
 st.subheader("🗺️ Mappa Territoriale & Retino di Rischio")
 
 m = folium.Map(
@@ -508,7 +462,7 @@ folium.Marker(
     icon=folium.Icon(color="green", icon="leaf"),
 ).add_to(m)
 
-# --- RETINO TRASPARENTE (POLIGONO DI RISCHIO PATOGENO/PARASSITA) ---
+# Poligono Trasparente Rischio
 lat_c, lon_c = st.session_state.active_lat, st.session_state.active_lon
 delta_lat, delta_lon = 0.012, 0.018
 
@@ -519,14 +473,7 @@ polygon_coords = [
     [lat_c - delta_lat, lon_c - delta_lon],
 ]
 
-# Il colore del retino della zona si adatta in base al rischio calcolato
-fill_c = (
-    "#ff4d4d"
-    if "ELEVATO" in risk_level
-    else "#ffcc00"
-    if "MEDIO" in risk_level
-    else "#66cc66"
-)
+fill_c = "#ff4d4d" if "ELEVATO" in risk_level else "#ffcc00" if "MEDIO" in risk_level else "#66cc66"
 
 folium.Polygon(
     locations=polygon_coords,
@@ -538,10 +485,7 @@ folium.Polygon(
     popup=f"<b>Zona a Retino di Rischio:</b> {risk_level}<br>Coltura: {st.session_state.active_crop}",
 ).add_to(m)
 
-if (
-    st.session_state.clicked_lat != st.session_state.active_lat
-    or st.session_state.clicked_lon != st.session_state.active_lon
-):
+if (st.session_state.clicked_lat != st.session_state.active_lat or st.session_state.clicked_lon != st.session_state.active_lon):
     folium.Marker(
         [st.session_state.clicked_lat, st.session_state.clicked_lon],
         popup="Punto Selezionato",
@@ -559,23 +503,21 @@ if not alerts_df.empty:
 
 map_data = st_folium(m, width=750, height=380, key="agri_map")
 
+# --- FIX TECNICO MAPPA: Controllo antiblocco sul loop st.rerun() ---
 if map_data and map_data.get("last_clicked"):
-    cl_lat = map_data["last_clicked"]["lat"]
-    cl_lon = map_data["last_clicked"]["lng"]
-    if (
-        abs(cl_lat - st.session_state.clicked_lat) > 0.0001
-        or abs(cl_lon - st.session_state.clicked_lon) > 0.0001
-    ):
+    cl_lat = round(map_data["last_clicked"]["lat"], 5)
+    cl_lon = round(map_data["last_clicked"]["lng"], 5)
+
+    if (cl_lat, cl_lon) != st.session_state.last_registered_click:
         st.session_state.clicked_lat = cl_lat
         st.session_state.clicked_lon = cl_lon
+        st.session_state.last_registered_click = (cl_lat, cl_lon)
         st.rerun()
 
 
 # --- GENERATORE ALLERTA WHATSAPP ---
 with st.expander("📱 Genera Allerta WhatsApp per Agricoltori (Test 1-Click)"):
-    st.caption(
-        "Crea il messaggio telegrafico da inviare all'agricoltore per validare l'intervento sul campo."
-    )
+    st.caption("Crea il messaggio telegrafico da inviare all'agricoltore per validare l'intervento sul campo.")
 
     wa_crop = st.session_state.active_crop
     wa_field = st.session_state.active_field_name
@@ -604,9 +546,7 @@ with st.expander("📱 Genera Allerta WhatsApp per Agricoltori (Test 1-Click)"):
 
 # --- SEGNALAZIONI ---
 with st.expander("📢 Invia una Segnalazione Anonima nella zona"):
-    st.caption(
-        f"Posizione: **Lat {st.session_state.clicked_lat:.5f}, Lon {st.session_state.clicked_lon:.5f}**"
-    )
+    st.caption(f"Posizione: **Lat {st.session_state.clicked_lat:.5f}, Lon {st.session_state.clicked_lon:.5f}**")
     a_type = st.selectbox(
         "Avvistamento / Anomalia:",
         [
@@ -638,6 +578,8 @@ with t_sat:
     if not df_sat.empty:
         st.dataframe(df_sat, use_container_width=True, hide_index=True)
         st.line_chart(df_sat.set_index("Data")[["NDVI", "MSAVI", "NDMI"]])
+    else:
+        st.info("Nessun dato satellitare disponibile al momento.")
 
 with t_meteo:
     if not df_meteo.empty:
@@ -648,9 +590,7 @@ st.markdown("#### 📥 Esporta Report Storico (Meteo + Satellite)")
 exp_col1, exp_col2 = st.columns(2)
 
 if not df_sat.empty or not df_meteo.empty:
-    df_combined = pd.merge(df_meteo, df_sat, on="Data", how="outer").sort_values(
-        by="Data", ascending=False
-    )
+    df_combined = pd.merge(df_meteo, df_sat, on="Data", how="outer").sort_values(by="Data", ascending=False)
     csv_report = df_combined.to_csv(index=False).encode("utf-8")
 
     exp_col1.download_button(
@@ -660,16 +600,8 @@ if not df_sat.empty or not df_meteo.empty:
         mime="text/csv",
     )
 
-html_sat = (
-    df_sat.to_html(index=False, classes="styled-table")
-    if not df_sat.empty
-    else "<p>Nessun dato satellitare disponibile</p>"
-)
-html_meteo = (
-    df_meteo.to_html(index=False, classes="styled-table")
-    if not df_meteo.empty
-    else "<p>Nessun dato meteo disponibile</p>"
-)
+html_sat = df_sat.to_html(index=False, classes="styled-table") if not df_sat.empty else "<p>Nessun dato satellitare disponibile</p>"
+html_meteo = df_meteo.to_html(index=False, classes="styled-table") if not df_meteo.empty else "<p>Nessun dato meteo disponibile</p>"
 
 report_html = f"""
 <html>
@@ -742,9 +674,7 @@ with col_form:
             st.rerun()
 
 with col_table:
-    st.markdown(
-        f"##### 📖 Registro per: *{st.session_state.active_field_name}*"
-    )
+    st.markdown(f"##### 📖 Registro per: *{st.session_state.active_field_name}*")
     treatments_df = get_treatments(st.session_state.active_field_name)
 
     if not treatments_df.empty:
