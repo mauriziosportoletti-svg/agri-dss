@@ -127,7 +127,7 @@ def get_alerts():
         )
 
 
-# --- FUNZIONI E STATO PER GRIGLIA AD ALVEARE ---
+# --- FUNZIONI E STATO PER GRIGLIA AD ALVEARE (INALTERATE) ---
 def get_hexagon_coords(center_lat, center_lon, radius_km):
     coords = []
     lat_deg_per_km = 1.0 / 111.0
@@ -152,15 +152,17 @@ def init_honeycomb_state(crop="Oliveto"):
     }
     risks = risk_mapping.get(crop, risk_mapping["Altro"])
 
+    default_phases = {"Potatura": True, "Concimazione": True, "Trattamento": False, "Raccolta": False}
+
     if "honeycomb_cells" not in st.session_state:
         st.session_state.honeycomb_cells = [
-            {"id": "c0", "name": "Settore Centro (Campo)", "r": 0, "c": 0, "color": "#4caf50", "risk": risks[2], "reports": 0, "treatments": 1, "validated": True, "photo_b64": None},
-            {"id": "c1", "name": "Settore Est (Collina)", "r": 1, "c": 0, "color": "#f44336", "risk": risks[0], "reports": 6, "treatments": 4, "validated": True, "photo_b64": None},
-            {"id": "c2", "name": "Settore Ovest (Valle)", "r": -1, "c": 0, "color": "#ff9800", "risk": risks[1], "reports": 3, "treatments": 2, "validated": False, "photo_b64": None},
-            {"id": "c3", "name": "Settore Nord", "r": 0, "c": 1, "color": "#4caf50", "risk": risks[2], "reports": 0, "treatments": 1, "validated": True, "photo_b64": None},
-            {"id": "c4", "name": "Settore Sud", "r": 0, "c": -1, "color": "#ff9800", "risk": risks[1], "reports": 2, "treatments": 1, "validated": False, "photo_b64": None},
-            {"id": "c5", "name": "Settore Sud-Est", "r": 1, "c": -1, "color": "#4caf50", "risk": risks[2], "reports": 1, "treatments": 0, "validated": True, "photo_b64": None},
-            {"id": "c6", "name": "Settore Nord-Ovest", "r": -1, "c": 1, "color": "#f44336", "risk": risks[0], "reports": 5, "treatments": 3, "validated": True, "photo_b64": None},
+            {"id": "c0", "name": "Settore Centro (Campo)", "r": 0, "c": 0, "color": "#4caf50", "risk": risks[2], "reports": 0, "treatments": 1, "validated": True, "photo_b64": None, "phases": default_phases.copy()},
+            {"id": "c1", "name": "Settore Est (Collina)", "r": 1, "c": 0, "color": "#f44336", "risk": risks[0], "reports": 6, "treatments": 4, "validated": True, "photo_b64": None, "phases": {"Potatura": True, "Concimazione": False, "Trattamento": True, "Raccolta": False}},
+            {"id": "c2", "name": "Settore Ovest (Valle)", "r": -1, "c": 0, "color": "#ff9800", "risk": risks[1], "reports": 3, "treatments": 2, "validated": False, "photo_b64": None, "phases": default_phases.copy()},
+            {"id": "c3", "name": "Settore Nord", "r": 0, "c": 1, "color": "#4caf50", "risk": risks[2], "reports": 0, "treatments": 1, "validated": True, "photo_b64": None, "phases": default_phases.copy()},
+            {"id": "c4", "name": "Settore Sud", "r": 0, "c": -1, "color": "#ff9800", "risk": risks[1], "reports": 2, "treatments": 1, "validated": False, "photo_b64": None, "phases": default_phases.copy()},
+            {"id": "c5", "name": "Settore Sud-Est", "r": 1, "c": -1, "color": "#4caf50", "risk": risks[2], "reports": 1, "treatments": 0, "validated": True, "photo_b64": None, "phases": default_phases.copy()},
+            {"id": "c6", "name": "Settore Nord-Ovest", "r": -1, "c": 1, "color": "#f44336", "risk": risks[0], "reports": 5, "treatments": 3, "validated": True, "photo_b64": None, "phases": default_phases.copy()},
         ]
 
 
@@ -189,7 +191,8 @@ def generate_honeycomb_grid(center_lat, center_lon, radius_km=1.8):
             "reports": cell["reports"],
             "treatments": cell["treatments"],
             "validated": cell.get("validated", False),
-            "photo_b64": cell.get("photo_b64", None)
+            "photo_b64": cell.get("photo_b64", None),
+            "phases": cell.get("phases", {"Potatura": False, "Concimazione": False, "Trattamento": False, "Raccolta": False})
         })
 
     return hexagons
@@ -471,7 +474,7 @@ else:
 
 
 # --- MAIN PAGE ---
-st.title("🌾 AgriDSS: Monitoraggio & Allarmi")
+st.title("🌾 AgriDSS: Monitoraggio & Allerte")
 st.caption(
     f"📍 **Campo Attivo**: {st.session_state.active_field_name} ({st.session_state.active_crop}) | **Lat**: {st.session_state.active_lat:.5f} | **Lon**: {st.session_state.active_lon:.5f}"
 )
@@ -513,7 +516,7 @@ st.info(f"💡 **Diagnosi DSS**: {risk_description}")
 
 st.markdown("---")
 
-# --- MAPPA INTERATTIVA CON ALVEARE E FOTO VALIDATE ---
+# --- MAPPA INTERATTIVA CON ALVEARE ---
 st.subheader("🗺️ Mappa Territoriale & Mappatura ad Alveare")
 
 m = folium.Map(
@@ -528,7 +531,7 @@ folium.Marker(
     icon=folium.Icon(color="green", icon="leaf"),
 ).add_to(m)
 
-# Generazione Griglia ad Alveare (Raggio 1.8 km)
+# Generazione Griglia ad Alveare (Stessa identica logica)
 hex_grid = generate_honeycomb_grid(
     st.session_state.active_lat, 
     st.session_state.active_lon, 
@@ -542,14 +545,29 @@ for h in hex_grid:
     if h["photo_b64"]:
         img_html = f"""<div style='margin-top: 8px;'><b style='font-size:11px;'>📸 Foto dal Campo:</b><br><img src='data:image/png;base64,{h['photo_b64']}' style='width: 100%; max-width: 200px; border-radius: 6px; margin-top: 4px; border: 1px solid #ccc;'/></div>"""
     
+    # Costruzione visuale Micro-Timeline Fasi Colturali nel Popup
+    p = h.get("phases", {})
+    p_pot = "🟩" if p.get("Potatura") else "⬜"
+    p_conc = "🟩" if p.get("Concimazione") else "⬜"
+    p_tratt = "🟩" if p.get("Trattamento") else "⬜"
+    p_racc = "🟩" if p.get("Raccolta") else "⬜"
+
+    timeline_html = f"""
+    <div style='background:#f4f6f4; padding:6px; border-radius:4px; margin-top:6px; font-size:11px;'>
+        <b>Fasi Colturali:</b><br>
+        {p_pot} Potatura | {p_conc} Concima<br>
+        {p_tratt} Trattam. | {p_racc} Raccolta
+    </div>
+    """
+
     popup_html = f"""
-    <div style='font-family: sans-serif; font-size: 13px; min-width: 200px;'>
+    <div style='font-family: sans-serif; font-size: 13px; min-width: 210px;'>
         <b style='font-size: 14px; color: #1b5e20;'>{h['name']}</b><br>
         🌱 Coltura: <b>{st.session_state.active_crop}</b><br>
         ⚠️ Stato: <b>{h['risk']}</b><br>
-        📋 Stato Validazione: {status_badge}<br>
-        📲 Segnalazioni WhatsApp: <b>{h['reports']}</b><br>
-        🚜 Trattamenti Registrati: <b>{h['treatments']}</b>
+        📋 Validazione: {status_badge}<br>
+        📲 WhatsApp: <b>{h['reports']}</b> | 🚜 Trattamenti: <b>{h['treatments']}</b>
+        {timeline_html}
         {img_html}
     </div>
     """
@@ -593,9 +611,9 @@ if map_data and map_data.get("last_clicked"):
         st.rerun()
 
 
-# --- PANNELLO DI AGGIORNAMENTO MANUALE & UPLOAD FOTO (ADMIN) ---
-with st.expander("🛠️ Aggiorna Stato Esagoni / Carica Foto & Valida (Pannello Admin)"):
-    st.caption("Aggiorna lo stato dei settori, carica la foto inviata dall'agricoltore e imposta la firma dell'agronomo.")
+# --- PANNELLO GESTIONE ESAGONI + MICRO-TIMELINE FASI ---
+with st.expander("🛠️ Aggiorna Stato Esagoni & Micro-Timeline Fasi Colturali"):
+    st.caption("Seleziona il settore dell'alveare per aggiornare il livello di rischio, le 4 fasi colturali e la validazione foto.")
     
     sector_names = [cell["name"] for cell in st.session_state.honeycomb_cells]
     selected_sector_name = st.selectbox("Seleziona Settore da Modificare:", sector_names)
@@ -615,19 +633,36 @@ with st.expander("🛠️ Aggiorna Stato Esagoni / Carica Foto & Valida (Pannell
     new_treatments = c_edit3.number_input("🚜 N° Trattamenti Eseguiti:", value=int(target_cell["treatments"]), min_value=0)
     
     st.markdown("---")
+    st.markdown("##### ⏱️ Micro-Timeline Fasi Colturali (1 Click per Aggiornare)")
+    
+    curr_phases = target_cell.get("phases", {"Potatura": False, "Concimazione": False, "Trattamento": False, "Raccolta": False})
+    
+    col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+    p_pot = col_p1.checkbox("✂️ Potatura", value=curr_phases.get("Potatura", False))
+    p_conc = col_p2.checkbox("🌱 Concimazione", value=curr_phases.get("Concimazione", False))
+    p_tratt = col_p3.checkbox("🛡️ Trattamento", value=curr_phases.get("Trattamento", False))
+    p_racc = col_p4.checkbox("🫒 Raccolta", value=curr_phases.get("Raccolta", False))
+
+    st.markdown("---")
     st.markdown("##### 📸 Validazione & Foto Campo")
     col_photo1, col_photo2 = st.columns(2)
     
     is_validated = col_photo1.checkbox("✅ Approvato / Validato da Agronomo", value=target_cell.get("validated", False))
     uploaded_file = col_photo2.file_uploader("Carica Foto Anomalia/Trappola (PNG/JPG):", type=["png", "jpg", "jpeg"])
     
-    if st.button("💾 Applica Modifiche Esagone"):
+    if st.button("💾 Salva Stato Settore"):
         color_hex = "#f44336" if "🔴" in new_color else ("#ff9800" if "🟡" in new_color else "#4caf50")
         target_cell["color"] = color_hex
         target_cell["risk"] = new_risk_text
         target_cell["reports"] = new_reports
         target_cell["treatments"] = new_treatments
         target_cell["validated"] = is_validated
+        target_cell["phases"] = {
+            "Potatura": p_pot,
+            "Concimazione": p_conc,
+            "Trattamento": p_tratt,
+            "Raccolta": p_racc
+        }
         
         if uploaded_file is not None:
             bytes_data = uploaded_file.getvalue()
@@ -842,7 +877,7 @@ with col_table:
 
 st.markdown("---")
 
-# --- HUB BOLLETTINI FITOSANITARI (IN FONDO) ---
+# --- HUB BOLLETTINI FITOSANITARI ---
 st.subheader("📰 Bollettini Fitosanitari & Portale Regionale Ufficiale")
 
 real_bulletin = fetch_real_bulletin()
