@@ -1,5 +1,6 @@
 import io
 import json
+import math
 import re
 import sqlite3
 import urllib.parse
@@ -125,7 +126,69 @@ def get_alerts():
         )
 
 
-# --- API METEO AVANZATA (ICON-D2 2.2km + Set Completo per DSS) ---
+# --- FUNZIONI PER GENERAZIONE GRIGLIA AD ALVEARE (ESAGONI CONTIGUI) ---
+def get_hexagon_coords(center_lat, center_lon, radius_km):
+    coords = []
+    lat_deg_per_km = 1.0 / 111.0
+    lon_deg_per_km = 1.0 / (111.0 * math.cos(math.radians(center_lat)))
+
+    for i in range(6):
+        angle_deg = 60 * i + 30
+        angle_rad = math.radians(angle_deg)
+        h_lat = center_lat + (radius_km * math.sin(angle_rad)) * lat_deg_per_km
+        h_lon = center_lon + (radius_km * math.cos(angle_rad)) * lon_deg_per_km
+        coords.append([h_lat, h_lon])
+    return coords
+
+
+def generate_honeycomb_grid(center_lat, center_lon, radius_km=1.0, crop="Oliveto"):
+    risk_mapping = {
+        "Oliveto": ["Rischio Mosca dell'Olivo High", "Attacco Occhio di Pavone", "Stabile / Sotto Controllo"],
+        "Vigneto": ["Rischio Elevato Peronospora", "Presenza Oidio / Botrite", "Stabile / Sotto Controllo"],
+        "Seminativo": ["Rischio Fusariosi Spiga", "Presenza Afidi", "Stabile / Sotto Controllo"],
+        "Noccioleto": ["Rischio Cimice Asiatica", "Presenza Balanino", "Stabile / Sotto Controllo"],
+        "Altro": ["Alto Rischio Infezione", "Presenza Parassiti", "Stabile / Sotto Controllo"]
+    }
+    risks = risk_mapping.get(crop, risk_mapping["Altro"])
+
+    dx = math.sqrt(3) * radius_km
+    dy = 1.5 * radius_km
+
+    lat_deg_per_km = 1.0 / 111.0
+    lon_deg_per_km = 1.0 / (111.0 * math.cos(math.radians(center_lat)))
+
+    demo_cells = [
+        {"r": 0, "c": 0, "color": "#4caf50", "risk": risks[2], "reports": 0, "treatments": 1, "name": "Settore Centro (Campo)"},
+        {"r": 1, "c": 0, "color": "#f44336", "risk": risks[0], "reports": 6, "treatments": 4, "name": "Settore Est (Collina)"},
+        {"r": -1, "c": 0, "color": "#ff9800", "risk": risks[1], "reports": 3, "treatments": 2, "name": "Settore Ovest (Valle)"},
+        {"r": 0, "c": 1, "color": "#4caf50", "risk": risks[2], "reports": 0, "treatments": 1, "name": "Settore Nord"},
+        {"r": 0, "c": -1, "color": "#ff9800", "risk": risks[1], "reports": 2, "treatments": 1, "name": "Settore Sud"},
+        {"r": 1, "c": -1, "color": "#4caf50", "risk": risks[2], "reports": 1, "treatments": 0, "name": "Settore Sud-Est"},
+        {"r": -1, "c": 1, "color": "#f44336", "risk": risks[0], "reports": 5, "treatments": 3, "name": "Settore Nord-Ovest"},
+    ]
+
+    hexagons = []
+    for cell in demo_cells:
+        r, c = cell["r"], cell["c"]
+        x_km = c * dx + (dx / 2.0 if abs(r) % 2 == 1 else 0.0)
+        y_km = r * dy
+
+        c_lat = center_lat + (y_km * lat_deg_per_km)
+        c_lon = center_lon + (x_km * lon_deg_per_km)
+
+        hexagons.append({
+            "coords": get_hexagon_coords(c_lat, c_lon, radius_km),
+            "color": cell["color"],
+            "name": cell["name"],
+            "risk": cell["risk"],
+            "reports": cell["reports"],
+            "treatments": cell["treatments"]
+        })
+
+    return hexagons
+
+
+# --- API METEO AVANZATA ---
 @st.cache_data(ttl=600)
 def fetch_weather_advanced(lat, lon):
     url = (
@@ -137,14 +200,12 @@ def fetch_weather_advanced(lat, lon):
     try:
         res = requests.get(url, timeout=10)
         if res.status_code == 200:
-            data = res.json()
-            return data
+            return res.json()
     except Exception:
         pass
     return None
 
 
-# --- ANALISI INTELLIGENTE DEI RISCHI (Grandine, Temporali, Gelate) ---
 def analyze_weather_risks(w_data):
     if not w_data or "hourly" not in w_data:
         return "NORMALE 🟢", "Condizioni meteorologiche stabili.", None
@@ -156,7 +217,6 @@ def analyze_weather_risks(w_data):
     wcodes = hourly.get("weathercode", [])
     temps = hourly.get("temperature_2m", [])
 
-    # Analizziamo le prossime 48 ore per intercettare pericoli imminenti
     for i in range(min(48, len(times))):
         c = capes[i] if i < len(capes) and capes[i] is not None else 0
         g = gusts[i] if i < len(gusts) and gusts[i] is not None else 0
@@ -164,7 +224,6 @@ def analyze_weather_risks(w_data):
         temp = temps[i] if i < len(temps) and temps[i] is not None else 20
         t_str = times[i]
 
-        # Condizione 1: Rischio Temporale Forte / Grandine (CAPE alto + Raffiche forti o codice temporale WMO 95,96,99)
         if (c > 1000 and g > 45) or wc in [95, 96, 99]:
             desc = (f"⚠️ Rischio Temporale Severo / Grandine previsto per il {t_str}. "
                     f"Raffiche stimate a {g} km/h e instabilità elevata (CAPE {c:.0f} J/kg).")
@@ -173,7 +232,6 @@ def analyze_weather_risks(w_data):
                 "desc": desc
             }
 
-        # Condizione 2: Rischio Gelata (Temperatura sotto i 2°C)
         if temp < 2.0:
             desc = f"❄️ Rischio Gelata / Temperature critiche ({temp}°C) previste per il {t_str}."
             return "ATTENZIONE - GELATA 🟡", desc, {
@@ -184,7 +242,6 @@ def analyze_weather_risks(w_data):
     return "NORMALE 🟢", "Nessuna criticità severa rilevata dai modelli ad alta risoluzione nelle prossime 48h.", None
 
 
-# --- HUB BOLLETTINI FITOSANITARI & PORTALE REGIONALE ---
 @st.cache_data(ttl=3600)
 def fetch_real_bulletin():
     rss_url = "https://agronotizie.imagelinenetwork.com/rss/difesa-e-diserbo.xml"
@@ -207,12 +264,11 @@ def fetch_real_bulletin():
         pass
     return {
         "title": "Portali Fitosanitari & ARPA Regionali",
-        "desc": "Consulta direttamente i bollettini ufficiali validati dai servizi fitosanitari e dalle ARPA della tua regione.",
+        "desc": "Consulta direttamente i bollettini ufficiali validati dai servizi fitosanitari della tua regione.",
         "link": "https://www.sian.it/portale-mipaaf/home.jsp"
     }
 
 
-# --- API SATELLITE (COPERNICUS SENTINEL-2) ---
 @st.cache_data(ttl=3600)
 def fetch_satellite_statistics(lat, lon):
     client_id = "sh-fea07070-5af9-419b-9bcf-9aa06c70b822"
@@ -412,15 +468,12 @@ st.caption(
     f"📍 **Campo Attivo**: {st.session_state.active_field_name} ({st.session_state.active_crop}) | **Lat**: {st.session_state.active_lat:.5f} | **Lon**: {st.session_state.active_lon:.5f}"
 )
 
-# Fetch Dati Meteo & Satellite
 w_data = fetch_weather_advanced(st.session_state.active_lat, st.session_state.active_lon)
 sat_json = fetch_satellite_statistics(st.session_state.active_lat, st.session_state.active_lon)
 df_sat = parse_satellite_json(sat_json)
 
-# Analisi Automatica Rischi Meteo (Grandine, Temporali, Gelate)
 risk_level, risk_description, pending_alert = analyze_weather_risks(w_data)
 
-# Prepariamo la tabella meteo giornaliera
 df_meteo = pd.DataFrame()
 if w_data and "daily" in w_data:
     d = w_data["daily"]
@@ -452,13 +505,12 @@ st.info(f"💡 **Diagnosi DSS**: {risk_description}")
 
 st.markdown("---")
 
-# --- PANNELLO DI DEBUG METEO & API (Verifica Modello ICON-D2 e set completo) ---
+# --- PANNELLO DI DEBUG METEO & API ---
 with st.expander("🛠️ Pannello di Debug API Meteo & Set Dati (ICON-D2 2.2km)"):
     st.write("Verifica dei parametri scaricati dal modello ad alta risoluzione (inclusi umidità, vento, CAPE e suolo).")
     st.write(f"**Coordinate attive:** Lat `{st.session_state.active_lat}` | Lon `{st.session_state.active_lon}`")
     if w_data:
         st.success("Connessione API riuscita con successo!")
-        # Mostriamo un estratto orario recente per debugging
         hourly_sample = {}
         if "hourly" in w_data:
             h = w_data["hourly"]
@@ -476,7 +528,7 @@ with st.expander("🛠️ Pannello di Debug API Meteo & Set Dati (ICON-D2 2.2km)
 
 st.markdown("---")
 
-# --- SEZIONE: HUB BOLLETTINI FITOSANITARI & PORTALE REGIONALE (Pulito) ---
+# --- HUB BOLLETTINI FITOSANITARI & PORTALE REGIONALE ---
 st.subheader("📰 Bollettini Fitosanitari & Portale Regionale Ufficiale")
 
 real_bulletin = fetch_real_bulletin()
@@ -495,39 +547,49 @@ st.markdown(f"""
 
 st.markdown("---")
 
-# --- MAPPA INTERATTIVA ---
-st.subheader("🗺️ Mappa Territoriale")
+# --- MAPPA INTERATTIVA CON GRIGLIA AD ALVEARE (ESAGONI CONTIGUI) ---
+st.subheader("🗺️ Mappa Territoriale & Mappatura ad Alveare")
 
 m = folium.Map(
     location=[st.session_state.active_lat, st.session_state.active_lon],
     zoom_start=13,
 )
 
+# Marker Campo Attivo
 folium.Marker(
     [st.session_state.active_lat, st.session_state.active_lon],
-    popup=f"Campo Attivo: {st.session_state.active_field_name} ({st.session_state.active_crop})",
+    popup=f"<b>Campo Attivo: {st.session_state.active_field_name}</b><br>Coltura: {st.session_state.active_crop}",
     icon=folium.Icon(color="green", icon="leaf"),
 ).add_to(m)
 
-lat_c, lon_c = st.session_state.active_lat, st.session_state.active_lon
-delta_lat, delta_lon = 0.012, 0.018
+# Generazione Griglia ad Alveare attorno al Campo
+hex_grid = generate_honeycomb_grid(
+    st.session_state.active_lat, 
+    st.session_state.active_lon, 
+    radius_km=0.9, 
+    crop=st.session_state.active_crop
+)
 
-polygon_coords = [
-    [lat_c + delta_lat, lon_c - delta_lon],
-    [lat_c + delta_lat, lon_c + delta_lon],
-    [lat_c - delta_lat, lon_c + delta_lon],
-    [lat_c - delta_lat, lon_c - delta_lon],
-]
-
-folium.Polygon(
-    locations=polygon_coords,
-    color="#2e7d32",
-    weight=2,
-    fill=True,
-    fill_color="#2e7d32",
-    fill_opacity=0.25,
-    popup=f"<b>Area Monitorata:</b> {st.session_state.active_field_name}",
-).add_to(m)
+for h in hex_grid:
+    popup_html = f"""
+    <div style='font-family: sans-serif; font-size: 13px; min-width: 180px;'>
+        <b style='font-size: 14px; color: #1b5e20;'>{h['name']}</b><br>
+        🌱 Coltura: <b>{st.session_state.active_crop}</b><br>
+        ⚠️ Stato: <b>{h['risk']}</b><br>
+        📲 Segnalazioni WhatsApp: <b>{h['reports']}</b><br>
+        🚜 Trattamenti Registrati (Anonimi): <b>{h['treatments']}</b>
+    </div>
+    """
+    
+    folium.Polygon(
+        locations=h["coords"],
+        color=h["color"],
+        weight=2,
+        fill=True,
+        fill_color=h["color"],
+        fill_opacity=0.35,
+        popup=folium.Popup(popup_html, max_width=300)
+    ).add_to(m)
 
 if (st.session_state.clicked_lat != st.session_state.active_lat or st.session_state.clicked_lon != st.session_state.active_lon):
     folium.Marker(
@@ -545,7 +607,7 @@ if not alerts_df.empty:
             icon=folium.Icon(color="red", icon="warning", prefix="fa"),
         ).add_to(m)
 
-map_data = st_folium(m, width=750, height=380, key="agri_map")
+map_data = st_folium(m, width=750, height=420, key="agri_map")
 
 if map_data and map_data.get("last_clicked"):
     cl_lat = round(map_data["last_clicked"]["lat"], 5)
@@ -558,14 +620,13 @@ if map_data and map_data.get("last_clicked"):
         st.rerun()
 
 
-# --- GENERATORE ALLERTA WHATSAPP (Con supporto automatico per grandine/gelate) ---
+# --- GENERATORE ALLERTA WHATSAPP ---
 with st.expander("📱 Genera Allerta WhatsApp per Agricoltori (Test 1-Click)"):
     st.caption("Crea il messaggio personalizzato da inviare via WhatsApp per il campo attivo.")
 
     wa_crop = st.session_state.active_crop
     wa_field = st.session_state.active_field_name
 
-    # Se c'è un'allerta automatica pendente, la usiamo come base per il messaggio
     default_msg_content = risk_description if pending_alert else "Condizioni stabili. Verifica lo stato colturale."
 
     msg_template = (
@@ -583,7 +644,6 @@ with st.expander("📱 Genera Allerta WhatsApp per Agricoltori (Test 1-Click)"):
         </div>
     """, unsafe_allow_html=True)
 
-    # Se c'è un'allerta automatica, offri il tasto rapido per salvarla nel DB delle allerte
     if pending_alert:
         if st.button("🚨 Registra questa Allerta nel Database Storico"):
             add_alert(pending_alert["type"], pending_alert["desc"], st.session_state.active_lat, st.session_state.active_lon)
