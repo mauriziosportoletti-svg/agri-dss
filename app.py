@@ -127,7 +127,7 @@ def get_alerts():
         )
 
 
-# --- FUNZIONI E STATO PER GRIGLIA AD ALVEARE (INALTERATE) ---
+# --- FUNZIONI E STATO PER GRIGLIA AD ALVEARE ---
 def get_hexagon_coords(center_lat, center_lon, radius_km):
     coords = []
     lat_deg_per_km = 1.0 / 111.0
@@ -156,13 +156,27 @@ def init_honeycomb_state(crop="Oliveto"):
 
     if "honeycomb_cells" not in st.session_state:
         st.session_state.honeycomb_cells = [
-            {"id": "c0", "name": "Settore Centro (Campo)", "r": 0, "c": 0, "color": "#4caf50", "risk": risks[2], "reports": 0, "treatments": 1, "validated": True, "photo_b64": None, "phases": default_phases.copy()},
-            {"id": "c1", "name": "Settore Est (Collina)", "r": 1, "c": 0, "color": "#f44336", "risk": risks[0], "reports": 6, "treatments": 4, "validated": True, "photo_b64": None, "phases": {"Potatura": True, "Concimazione": False, "Trattamento": True, "Raccolta": False}},
-            {"id": "c2", "name": "Settore Ovest (Valle)", "r": -1, "c": 0, "color": "#ff9800", "risk": risks[1], "reports": 3, "treatments": 2, "validated": False, "photo_b64": None, "phases": default_phases.copy()},
-            {"id": "c3", "name": "Settore Nord", "r": 0, "c": 1, "color": "#4caf50", "risk": risks[2], "reports": 0, "treatments": 1, "validated": True, "photo_b64": None, "phases": default_phases.copy()},
-            {"id": "c4", "name": "Settore Sud", "r": 0, "c": -1, "color": "#ff9800", "risk": risks[1], "reports": 2, "treatments": 1, "validated": False, "photo_b64": None, "phases": default_phases.copy()},
-            {"id": "c5", "name": "Settore Sud-Est", "r": 1, "c": -1, "color": "#4caf50", "risk": risks[2], "reports": 1, "treatments": 0, "validated": True, "photo_b64": None, "phases": default_phases.copy()},
-            {"id": "c6", "name": "Settore Nord-Ovest", "r": -1, "c": 1, "color": "#f44336", "risk": risks[0], "reports": 5, "treatments": 3, "validated": True, "photo_b64": None, "phases": default_phases.copy()},
+            # Il centro (c0) è il TUO CAMPO: ha fasi colturali, foto e trattamenti diretti
+            {
+                "id": "c0", 
+                "name": "Campo Centro (Il Tuo Appezzamento)", 
+                "is_my_field": True,
+                "r": 0, "c": 0, 
+                "color": "#4caf50", 
+                "risk": risks[2], 
+                "reports": 0, 
+                "treatments": 1, 
+                "validated": True, 
+                "photo_b64": None, 
+                "phases": default_phases.copy()
+            },
+            # I settori circostanti sono RADAR DISTRETTO (Terzi): solo Rischio DSS e Segnalazioni di zona
+            {"id": "c1", "name": "Settore Est (Collina - Terzi)", "is_my_field": False, "r": 1, "c": 0, "color": "#f44336", "risk": risks[0], "reports": 6},
+            {"id": "c2", "name": "Settore Ovest (Valle - Terzi)", "is_my_field": False, "r": -1, "c": 0, "color": "#ff9800", "risk": risks[1], "reports": 3},
+            {"id": "c3", "name": "Settore Nord (Terzi)", "is_my_field": False, "r": 0, "c": 1, "color": "#4caf50", "risk": risks[2], "reports": 0},
+            {"id": "c4", "name": "Settore Sud (Terzi)", "is_my_field": False, "r": 0, "c": -1, "color": "#ff9800", "risk": risks[1], "reports": 2},
+            {"id": "c5", "name": "Settore Sud-Est (Terzi)", "is_my_field": False, "r": 1, "c": -1, "color": "#4caf50", "risk": risks[2], "reports": 1},
+            {"id": "c6", "name": "Settore Nord-Ovest (Terzi)", "is_my_field": False, "r": -1, "c": 1, "color": "#f44336", "risk": risks[0], "reports": 5},
         ]
 
 
@@ -187,12 +201,13 @@ def generate_honeycomb_grid(center_lat, center_lon, radius_km=1.8):
             "coords": get_hexagon_coords(c_lat, c_lon, radius_km),
             "color": cell["color"],
             "name": cell["name"],
+            "is_my_field": cell.get("is_my_field", False),
             "risk": cell["risk"],
             "reports": cell["reports"],
-            "treatments": cell["treatments"],
+            "treatments": cell.get("treatments", 0),
             "validated": cell.get("validated", False),
             "photo_b64": cell.get("photo_b64", None),
-            "phases": cell.get("phases", {"Potatura": False, "Concimazione": False, "Trattamento": False, "Raccolta": False})
+            "phases": cell.get("phases", None)
         })
 
     return hexagons
@@ -531,7 +546,7 @@ folium.Marker(
     icon=folium.Icon(color="green", icon="leaf"),
 ).add_to(m)
 
-# Generazione Griglia ad Alveare (Stessa identica logica)
+# Generazione Griglia ad Alveare
 hex_grid = generate_honeycomb_grid(
     st.session_state.active_lat, 
     st.session_state.active_lon, 
@@ -539,46 +554,57 @@ hex_grid = generate_honeycomb_grid(
 )
 
 for h in hex_grid:
-    status_badge = "<span style='color: #2e7d32; font-weight: bold;'>🟢 VERIFICATO DA AGRONOMO</span>" if h["validated"] else "<span style='color: #e65100; font-weight: bold;'>🟡 IN ATTESA DI VERIFICA</span>"
-    
-    img_html = ""
-    if h["photo_b64"]:
-        img_html = f"""<div style='margin-top: 8px;'><b style='font-size:11px;'>📸 Foto dal Campo:</b><br><img src='data:image/png;base64,{h['photo_b64']}' style='width: 100%; max-width: 200px; border-radius: 6px; margin-top: 4px; border: 1px solid #ccc;'/></div>"""
-    
-    # Costruzione visuale Micro-Timeline Fasi Colturali nel Popup
-    p = h.get("phases", {})
-    p_pot = "🟩" if p.get("Potatura") else "⬜"
-    p_conc = "🟩" if p.get("Concimazione") else "⬜"
-    p_tratt = "🟩" if p.get("Trattamento") else "⬜"
-    p_racc = "🟩" if p.get("Raccolta") else "⬜"
+    if h["is_my_field"]:
+        # Popup Dettagliato per il TUO CAMPO (Centro)
+        status_badge = "<span style='color: #2e7d32; font-weight: bold;'>🟢 VERIFICATO DA AGRONOMO</span>" if h["validated"] else "<span style='color: #e65100; font-weight: bold;'>🟡 IN ATTESA DI VERIFICA</span>"
+        
+        img_html = ""
+        if h["photo_b64"]:
+            img_html = f"""<div style='margin-top: 8px;'><b style='font-size:11px;'>📸 Foto dal Campo:</b><br><img src='data:image/png;base64,{h['photo_b64']}' style='width: 100%; max-width: 200px; border-radius: 6px; margin-top: 4px; border: 1px solid #ccc;'/></div>"""
+        
+        p = h.get("phases", {}) or {}
+        p_pot = "🟩" if p.get("Potatura") else "⬜"
+        p_conc = "🟩" if p.get("Concimazione") else "⬜"
+        p_tratt = "🟩" if p.get("Trattamento") else "⬜"
+        p_racc = "🟩" if p.get("Raccolta") else "⬜"
 
-    timeline_html = f"""
-    <div style='background:#f4f6f4; padding:6px; border-radius:4px; margin-top:6px; font-size:11px;'>
-        <b>Fasi Colturali:</b><br>
-        {p_pot} Potatura | {p_conc} Concima<br>
-        {p_tratt} Trattam. | {p_racc} Raccolta
-    </div>
-    """
+        timeline_html = f"""
+        <div style='background:#e8f5e9; padding:6px; border-radius:4px; margin-top:6px; font-size:11px; border: 1px solid #c8e6c9;'>
+            <b>Le Tue Fasi Colturali:</b><br>
+            {p_pot} Potatura | {p_conc} Concima<br>
+            {p_tratt} Trattam. | {p_racc} Raccolta
+        </div>
+        """
 
-    popup_html = f"""
-    <div style='font-family: sans-serif; font-size: 13px; min-width: 210px;'>
-        <b style='font-size: 14px; color: #1b5e20;'>{h['name']}</b><br>
-        🌱 Coltura: <b>{st.session_state.active_crop}</b><br>
-        ⚠️ Stato: <b>{h['risk']}</b><br>
-        📋 Validazione: {status_badge}<br>
-        📲 WhatsApp: <b>{h['reports']}</b> | 🚜 Trattamenti: <b>{h['treatments']}</b>
-        {timeline_html}
-        {img_html}
-    </div>
-    """
+        popup_html = f"""
+        <div style='font-family: sans-serif; font-size: 13px; min-width: 220px;'>
+            <b style='font-size: 14px; color: #1b5e20;'>📍 {h['name']}</b><br>
+            🌱 Coltura: <b>{st.session_state.active_crop}</b><br>
+            ⚠️ Stato DSS: <b>{h['risk']}</b><br>
+            📋 Validazione: {status_badge}<br>
+            🚜 Trattamenti Eseguiti: <b>{h['treatments']}</b>
+            {timeline_html}
+            {img_html}
+        </div>
+        """
+    else:
+        # Popup Puramente Indicativo per i SETTORI CIRCOSTANTI (Terzi / Distretto)
+        popup_html = f"""
+        <div style='font-family: sans-serif; font-size: 13px; min-width: 200px;'>
+            <b style='font-size: 13px; color: #37474f;'>🌐 {h['name']}</b><br>
+            <span style='font-size:11px; color:#666;'><i>(Terreno di Terzi - Radar Distretto)</i></span><hr style='margin:4px 0;'>
+            ⚠️ <b>Rischio Calcolato DSS:</b><br><span style='color: {h['color']}; font-weight:bold;'>{h['risk']}</span><br>
+            📲 Segnalazioni di Zona: <b>{h['reports']}</b>
+        </div>
+        """
     
     folium.Polygon(
         locations=h["coords"],
         color=h["color"],
-        weight=2,
+        weight=3 if h["is_my_field"] else 1.5,
         fill=True,
         fill_color=h["color"],
-        fill_opacity=0.35,
+        fill_opacity=0.4 if h["is_my_field"] else 0.2,
         popup=folium.Popup(popup_html, max_width=320)
     ).add_to(m)
 
@@ -611,66 +637,81 @@ if map_data and map_data.get("last_clicked"):
         st.rerun()
 
 
-# --- PANNELLO GESTIONE ESAGONI + MICRO-TIMELINE FASI ---
-with st.expander("🛠️ Aggiorna Stato Esagoni & Micro-Timeline Fasi Colturali"):
-    st.caption("Seleziona il settore dell'alveare per aggiornare il livello di rischio, le 4 fasi colturali e la validazione foto.")
-    
+# --- PANNELLO GESTIONE ESAGONI & FASI ---
+with st.expander("🛠️ Controllo Settori Alveare & Fasi Colturali"):
     sector_names = [cell["name"] for cell in st.session_state.honeycomb_cells]
-    selected_sector_name = st.selectbox("Seleziona Settore da Modificare:", sector_names)
+    selected_sector_name = st.selectbox("Seleziona Settore da Gestire:", sector_names)
     
     target_cell = next(item for item in st.session_state.honeycomb_cells if item["name"] == selected_sector_name)
     
-    c_edit1, c_edit2, c_edit3 = st.columns(3)
-    
-    new_color = c_edit1.selectbox(
-        "Livello di Rischio (Colore):", 
-        ["🔴 Alto Rischio (#f44336)", "🟡 Medio Rischio (#ff9800)", "🟢 Basso Rischio (#4caf50)"],
-        index=0 if target_cell["color"] == "#f44336" else (1 if target_cell["color"] == "#ff9800" else 2)
-    )
-    
-    new_risk_text = c_edit1.text_input("Descrizione Rischio:", value=target_cell["risk"])
-    new_reports = c_edit2.number_input("📲 N° Segnalazioni WhatsApp:", value=int(target_cell["reports"]), min_value=0)
-    new_treatments = c_edit3.number_input("🚜 N° Trattamenti Eseguiti:", value=int(target_cell["treatments"]), min_value=0)
-    
-    st.markdown("---")
-    st.markdown("##### ⏱️ Micro-Timeline Fasi Colturali (1 Click per Aggiornare)")
-    
-    curr_phases = target_cell.get("phases", {"Potatura": False, "Concimazione": False, "Trattamento": False, "Raccolta": False})
-    
-    col_p1, col_p2, col_p3, col_p4 = st.columns(4)
-    p_pot = col_p1.checkbox("✂️ Potatura", value=curr_phases.get("Potatura", False))
-    p_conc = col_p2.checkbox("🌱 Concimazione", value=curr_phases.get("Concimazione", False))
-    p_tratt = col_p3.checkbox("🛡️ Trattamento", value=curr_phases.get("Trattamento", False))
-    p_racc = col_p4.checkbox("🫒 Raccolta", value=curr_phases.get("Raccolta", False))
-
-    st.markdown("---")
-    st.markdown("##### 📸 Validazione & Foto Campo")
-    col_photo1, col_photo2 = st.columns(2)
-    
-    is_validated = col_photo1.checkbox("✅ Approvato / Validato da Agronomo", value=target_cell.get("validated", False))
-    uploaded_file = col_photo2.file_uploader("Carica Foto Anomalia/Trappola (PNG/JPG):", type=["png", "jpg", "jpeg"])
-    
-    if st.button("💾 Salva Stato Settore"):
-        color_hex = "#f44336" if "🔴" in new_color else ("#ff9800" if "🟡" in new_color else "#4caf50")
-        target_cell["color"] = color_hex
-        target_cell["risk"] = new_risk_text
-        target_cell["reports"] = new_reports
-        target_cell["treatments"] = new_treatments
-        target_cell["validated"] = is_validated
-        target_cell["phases"] = {
-            "Potatura": p_pot,
-            "Concimazione": p_conc,
-            "Trattamento": p_tratt,
-            "Raccolta": p_racc
-        }
+    # SE È IL TUO CAMPO (CENTRO) -> GESTIONE COMPLETA
+    if target_cell.get("is_my_field", False):
+        st.success("🟢 **Stai modificando IL TUO CAMPO (Settore Centrale)**")
         
-        if uploaded_file is not None:
-            bytes_data = uploaded_file.getvalue()
-            b64_str = base64.b64encode(bytes_data).decode()
-            target_cell["photo_b64"] = b64_str
-            
-        st.success(f"Settore '{selected_sector_name}' aggiornato!")
-        st.rerun()
+        c_edit1, c_edit2 = st.columns(2)
+        new_color = c_edit1.selectbox(
+            "Stato Fitosanitario / Rischio:", 
+            ["🔴 Alto Rischio (#f44336)", "🟡 Medio Rischio (#ff9800)", "🟢 Basso Rischio (#4caf50)"],
+            index=0 if target_cell["color"] == "#f44336" else (1 if target_cell["color"] == "#ff9800" else 2)
+        )
+        new_risk_text = c_edit1.text_input("Note Diagnosi:", value=target_cell["risk"])
+        new_treatments = c_edit2.number_input("🚜 N° Trattamenti Eseguiti:", value=int(target_cell.get("treatments", 0)), min_value=0)
+
+        st.markdown("---")
+        st.markdown("##### ⏱️ Le Tue Fasi Colturali (Micro-Timeline)")
+        curr_phases = target_cell.get("phases", {"Potatura": False, "Concimazione": False, "Trattamento": False, "Raccolta": False})
+        
+        col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+        p_pot = col_p1.checkbox("✂️ Potatura", value=curr_phases.get("Potatura", False))
+        p_conc = col_p2.checkbox("🌱 Concimazione", value=curr_phases.get("Concimazione", False))
+        p_tratt = col_p3.checkbox("🛡️ Trattamento", value=curr_phases.get("Trattamento", False))
+        p_racc = col_p4.checkbox("🫒 Raccolta", value=curr_phases.get("Raccolta", False))
+
+        st.markdown("---")
+        st.markdown("##### 📸 Validazione Agronomica & Foto del Tuo Campo")
+        col_photo1, col_photo2 = st.columns(2)
+        is_validated = col_photo1.checkbox("✅ Campo Validato da Agronomo", value=target_cell.get("validated", False))
+        uploaded_file = col_photo2.file_uploader("Carica Foto Campione (PNG/JPG):", type=["png", "jpg", "jpeg"])
+        
+        if st.button("💾 Salva Dati del Tuo Campo"):
+            color_hex = "#f44336" if "🔴" in new_color else ("#ff9800" if "🟡" in new_color else "#4caf50")
+            target_cell["color"] = color_hex
+            target_cell["risk"] = new_risk_text
+            target_cell["treatments"] = new_treatments
+            target_cell["validated"] = is_validated
+            target_cell["phases"] = {
+                "Potatura": p_pot,
+                "Concimazione": p_conc,
+                "Trattamento": p_tratt,
+                "Raccolta": p_racc
+            }
+            if uploaded_file is not None:
+                bytes_data = uploaded_file.getvalue()
+                target_cell["photo_b64"] = base64.b64encode(bytes_data).decode()
+                
+            st.success("Dati del campo salvati con successo!")
+            st.rerun()
+
+    # SE È UN SETTORE CIRCOSTANTE (TERZI) -> SOLO VISUALIZZAZIONE E AGGIORNAMENTO RISCHIO/SEGNALAZIONI
+    else:
+        st.info("🌐 **Settore Indicativo (Terreni di Terzi - Distretto)**\n\n*Non puoi impostare fasi colturali o caricare foto private per i terreni dei vicini. Puoi aggiornare la stima del rischio DSS o registrare segnalazioni di zona.*")
+        
+        c_edit1, c_edit2 = st.columns(2)
+        new_color = c_edit1.selectbox(
+            "Rischio Calcolato DSS per la Zona:", 
+            ["🔴 Alto Rischio (#f44336)", "🟡 Medio Rischio (#ff9800)", "🟢 Basso Rischio (#4caf50)"],
+            index=0 if target_cell["color"] == "#f44336" else (1 if target_cell["color"] == "#ff9800" else 2)
+        )
+        new_risk_text = c_edit1.text_input("Descrizione Rischio DSS / Anomalia:", value=target_cell["risk"])
+        new_reports = c_edit2.number_input("📲 Segnalazioni di Zona Ricevute:", value=int(target_cell["reports"]), min_value=0)
+        
+        if st.button("💾 Aggiorna Rischio Distretto"):
+            color_hex = "#f44336" if "🔴" in new_color else ("#ff9800" if "🟡" in new_color else "#4caf50")
+            target_cell["color"] = color_hex
+            target_cell["risk"] = new_risk_text
+            target_cell["reports"] = new_reports
+            st.success(f"Indice di rischio per '{selected_sector_name}' aggiornato!")
+            st.rerun()
 
 
 # --- GENERATORE ALLERTA WHATSAPP ---
