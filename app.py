@@ -156,21 +156,21 @@ def init_honeycomb_state(crop="Oliveto"):
 
     if "honeycomb_cells" not in st.session_state:
         st.session_state.honeycomb_cells = [
-            # Il centro (c0) è il TUO CAMPO: ha fasi colturali, foto e trattamenti diretti
+            # CENTRO (Il Tuo Campo): Grigio sfumato (#78909C) e bordo scuro marcato
             {
                 "id": "c0", 
                 "name": "Campo Centro (Il Tuo Appezzamento)", 
                 "is_my_field": True,
                 "r": 0, "c": 0, 
-                "color": "#4caf50", 
-                "risk": risks[2], 
+                "color": "#78909C", 
+                "risk": "Gestione Diretta", 
                 "reports": 0, 
                 "treatments": 1, 
                 "validated": True, 
                 "photo_b64": None, 
                 "phases": default_phases.copy()
             },
-            # I settori circostanti sono RADAR DISTRETTO (Terzi): solo Rischio DSS e Segnalazioni di zona
+            # SETTORI CIRCOSTANTI (Radar Distretto): Semaforo di rischio attivo
             {"id": "c1", "name": "Settore Est (Collina - Terzi)", "is_my_field": False, "r": 1, "c": 0, "color": "#f44336", "risk": risks[0], "reports": 6},
             {"id": "c2", "name": "Settore Ovest (Valle - Terzi)", "is_my_field": False, "r": -1, "c": 0, "color": "#ff9800", "risk": risks[1], "reports": 3},
             {"id": "c3", "name": "Settore Nord (Terzi)", "is_my_field": False, "r": 0, "c": 1, "color": "#4caf50", "risk": risks[2], "reports": 0},
@@ -206,7 +206,7 @@ def generate_honeycomb_grid(center_lat, center_lon, radius_km=1.8):
             "reports": cell["reports"],
             "treatments": cell.get("treatments", 0),
             "validated": cell.get("validated", False),
-            "photo_b64": cell.get("photo_b64", None),
+            "has_photo": True if cell.get("photo_b64") else False,
             "phases": cell.get("phases", None)
         })
 
@@ -543,7 +543,7 @@ m = folium.Map(
 folium.Marker(
     [st.session_state.active_lat, st.session_state.active_lon],
     popup=f"<b>Campo Attivo: {st.session_state.active_field_name}</b><br>Coltura: {st.session_state.active_crop}",
-    icon=folium.Icon(color="green", icon="leaf"),
+    icon=folium.Icon(color="black", icon="leaf"),
 ).add_to(m)
 
 # Generazione Griglia ad Alveare
@@ -555,12 +555,9 @@ hex_grid = generate_honeycomb_grid(
 
 for h in hex_grid:
     if h["is_my_field"]:
-        # Popup Dettagliato per il TUO CAMPO (Centro)
-        status_badge = "<span style='color: #2e7d32; font-weight: bold;'>🟢 VERIFICATO DA AGRONOMO</span>" if h["validated"] else "<span style='color: #e65100; font-weight: bold;'>🟡 IN ATTESA DI VERIFICA</span>"
-        
-        img_html = ""
-        if h["photo_b64"]:
-            img_html = f"""<div style='margin-top: 8px;'><b style='font-size:11px;'>📸 Foto dal Campo:</b><br><img src='data:image/png;base64,{h['photo_b64']}' style='width: 100%; max-width: 200px; border-radius: 6px; margin-top: 4px; border: 1px solid #ccc;'/></div>"""
+        # Popup per IL TUO CAMPO (Centrale - Nessuna foto base64 dentro per massima velocita)
+        status_badge = "<span style='color: #2e7d32; font-weight: bold;'>🟢 VERIFICATO</span>" if h["validated"] else "<span style='color: #e65100; font-weight: bold;'>🟡 IN VERIFICA</span>"
+        photo_indicator = "📸 <i>Foto allegata (Vedi sotto)</i>" if h["has_photo"] else "📷 <i>Nessuna foto allegata</i>"
         
         p = h.get("phases", {}) or {}
         p_pot = "🟩" if p.get("Potatura") else "⬜"
@@ -569,7 +566,7 @@ for h in hex_grid:
         p_racc = "🟩" if p.get("Raccolta") else "⬜"
 
         timeline_html = f"""
-        <div style='background:#e8f5e9; padding:6px; border-radius:4px; margin-top:6px; font-size:11px; border: 1px solid #c8e6c9;'>
+        <div style='background:#eceff1; padding:6px; border-radius:4px; margin-top:6px; font-size:11px; border: 1px solid #cfd8dc;'>
             <b>Le Tue Fasi Colturali:</b><br>
             {p_pot} Potatura | {p_conc} Concima<br>
             {p_tratt} Trattam. | {p_racc} Raccolta
@@ -577,36 +574,48 @@ for h in hex_grid:
         """
 
         popup_html = f"""
-        <div style='font-family: sans-serif; font-size: 13px; min-width: 220px;'>
-            <b style='font-size: 14px; color: #1b5e20;'>📍 {h['name']}</b><br>
+        <div style='font-family: sans-serif; font-size: 13px; min-width: 210px;'>
+            <b style='font-size: 14px; color: #263238;'>📍 {h['name']}</b><br>
+            <span style='background-color:#eceff1; color:#37474f; padding:2px 6px; border-radius:3px; font-weight:bold; font-size:11px;'>IL TUO CAMPO</span><br><br>
             🌱 Coltura: <b>{st.session_state.active_crop}</b><br>
-            ⚠️ Stato DSS: <b>{h['risk']}</b><br>
-            📋 Validazione: {status_badge}<br>
-            🚜 Trattamenti Eseguiti: <b>{h['treatments']}</b>
+            📋 Stato: {status_badge}<br>
+            🚜 Trattamenti: <b>{h['treatments']}</b><br>
+            {photo_indicator}
             {timeline_html}
-            {img_html}
         </div>
         """
+        
+        # Rendere l'esagone del proprio campo in GRIGIO SFUMATO con Bordo Scuro Marcato
+        folium.Polygon(
+            locations=h["coords"],
+            color="#263238",      # Bordo scuro
+            weight=4,             # Spessore marcato
+            fill=True,
+            fill_color="#78909C", # Grigio sfumato
+            fill_opacity=0.5,
+            popup=folium.Popup(popup_html, max_width=300)
+        ).add_to(m)
+
     else:
-        # Popup Puramente Indicativo per i SETTORI CIRCOSTANTI (Terzi / Distretto)
+        # Popup per SETTORI CIRCOSTANTI (Terzi / Distretto) -> Semaforo del rischio
         popup_html = f"""
-        <div style='font-family: sans-serif; font-size: 13px; min-width: 200px;'>
+        <div style='font-family: sans-serif; font-size: 13px; min-width: 190px;'>
             <b style='font-size: 13px; color: #37474f;'>🌐 {h['name']}</b><br>
-            <span style='font-size:11px; color:#666;'><i>(Terreno di Terzi - Radar Distretto)</i></span><hr style='margin:4px 0;'>
+            <span style='font-size:11px; color:#666;'><i>Radar Distretto (Terzi)</i></span><hr style='margin:4px 0;'>
             ⚠️ <b>Rischio Calcolato DSS:</b><br><span style='color: {h['color']}; font-weight:bold;'>{h['risk']}</span><br>
-            📲 Segnalazioni di Zona: <b>{h['reports']}</b>
+            📲 Segnalazioni: <b>{h['reports']}</b>
         </div>
         """
-    
-    folium.Polygon(
-        locations=h["coords"],
-        color=h["color"],
-        weight=3 if h["is_my_field"] else 1.5,
-        fill=True,
-        fill_color=h["color"],
-        fill_opacity=0.4 if h["is_my_field"] else 0.2,
-        popup=folium.Popup(popup_html, max_width=320)
-    ).add_to(m)
+        
+        folium.Polygon(
+            locations=h["coords"],
+            color=h["color"],
+            weight=2,
+            fill=True,
+            fill_color=h["color"],
+            fill_opacity=0.3,
+            popup=folium.Popup(popup_html, max_width=300)
+        ).add_to(m)
 
 if (st.session_state.clicked_lat != st.session_state.active_lat or st.session_state.clicked_lon != st.session_state.active_lon):
     folium.Marker(
@@ -637,6 +646,36 @@ if map_data and map_data.get("last_clicked"):
         st.rerun()
 
 
+# --- GALLERIA FOTO ESTERNA ALLA MAPPA (Zero Lag) ---
+with st.expander("📸 Galleria Foto & Documentazione del Tuo Campo", expanded=False):
+    st.caption("Gestisci le immagini del tuo appezzamento. L'elaborazione esterna garantisce il 100% della velocità della mappa.")
+    my_cell = next(c for c in st.session_state.honeycomb_cells if c.get("is_my_field"))
+    
+    col_f1, col_f2 = st.columns([1, 1])
+    
+    with col_f1:
+        uploaded_file = st.file_uploader("Carica una nuova foto dal campo (JPG/PNG):", type=["png", "jpg", "jpeg"])
+        if uploaded_file is not None:
+            bytes_data = uploaded_file.getvalue()
+            my_cell["photo_b64"] = base64.b64encode(bytes_data).decode()
+            st.success("Foto caricata con successo!")
+            st.rerun()
+            
+        if my_cell.get("photo_b64"):
+            if st.button("🗑️ Rimuovi Foto Attuale"):
+                my_cell["photo_b64"] = None
+                st.success("Foto rimossa.")
+                st.rerun()
+
+    with col_f2:
+        if my_cell.get("photo_b64"):
+            st.markdown("**Foto del Campo Salvata:**")
+            img_bytes = base64.b64decode(my_cell["photo_b64"])
+            st.image(img_bytes, caption=f"Rilevamento Visivo: {st.session_state.active_field_name}", use_container_width=True)
+        else:
+            st.info("Nessuna foto allegata al campo al momento.")
+
+
 # --- PANNELLO GESTIONE ESAGONI & FASI ---
 with st.expander("🛠️ Controllo Settori Alveare & Fasi Colturali"):
     sector_names = [cell["name"] for cell in st.session_state.honeycomb_cells]
@@ -644,17 +683,12 @@ with st.expander("🛠️ Controllo Settori Alveare & Fasi Colturali"):
     
     target_cell = next(item for item in st.session_state.honeycomb_cells if item["name"] == selected_sector_name)
     
-    # SE È IL TUO CAMPO (CENTRO) -> GESTIONE COMPLETA
+    # SE È IL TUO CAMPO (CENTRO)
     if target_cell.get("is_my_field", False):
-        st.success("🟢 **Stai modificando IL TUO CAMPO (Settore Centrale)**")
+        st.success("🟢 **Stai modificando IL TUO CAMPO (Settore Centrale Grigio)**")
         
         c_edit1, c_edit2 = st.columns(2)
-        new_color = c_edit1.selectbox(
-            "Stato Fitosanitario / Rischio:", 
-            ["🔴 Alto Rischio (#f44336)", "🟡 Medio Rischio (#ff9800)", "🟢 Basso Rischio (#4caf50)"],
-            index=0 if target_cell["color"] == "#f44336" else (1 if target_cell["color"] == "#ff9800" else 2)
-        )
-        new_risk_text = c_edit1.text_input("Note Diagnosi:", value=target_cell["risk"])
+        new_risk_text = c_edit1.text_input("Note Operative Campo:", value=target_cell["risk"])
         new_treatments = c_edit2.number_input("🚜 N° Trattamenti Eseguiti:", value=int(target_cell.get("treatments", 0)), min_value=0)
 
         st.markdown("---")
@@ -667,15 +701,9 @@ with st.expander("🛠️ Controllo Settori Alveare & Fasi Colturali"):
         p_tratt = col_p3.checkbox("🛡️ Trattamento", value=curr_phases.get("Trattamento", False))
         p_racc = col_p4.checkbox("🫒 Raccolta", value=curr_phases.get("Raccolta", False))
 
-        st.markdown("---")
-        st.markdown("##### 📸 Validazione Agronomica & Foto del Tuo Campo")
-        col_photo1, col_photo2 = st.columns(2)
-        is_validated = col_photo1.checkbox("✅ Campo Validato da Agronomo", value=target_cell.get("validated", False))
-        uploaded_file = col_photo2.file_uploader("Carica Foto Campione (PNG/JPG):", type=["png", "jpg", "jpeg"])
+        is_validated = st.checkbox("✅ Campo Validato da Agronomo", value=target_cell.get("validated", False))
         
         if st.button("💾 Salva Dati del Tuo Campo"):
-            color_hex = "#f44336" if "🔴" in new_color else ("#ff9800" if "🟡" in new_color else "#4caf50")
-            target_cell["color"] = color_hex
             target_cell["risk"] = new_risk_text
             target_cell["treatments"] = new_treatments
             target_cell["validated"] = is_validated
@@ -685,32 +713,28 @@ with st.expander("🛠️ Controllo Settori Alveare & Fasi Colturali"):
                 "Trattamento": p_tratt,
                 "Raccolta": p_racc
             }
-            if uploaded_file is not None:
-                bytes_data = uploaded_file.getvalue()
-                target_cell["photo_b64"] = base64.b64encode(bytes_data).decode()
-                
-            st.success("Dati del campo salvati con successo!")
+            st.success("Dati aggiornati!")
             st.rerun()
 
-    # SE È UN SETTORE CIRCOSTANTE (TERZI) -> SOLO VISUALIZZAZIONE E AGGIORNAMENTO RISCHIO/SEGNALAZIONI
+    # SE È UN SETTORE CIRCOSTANTE (TERZI) -> MODIFICA SEMAFORO DI RISCHIO
     else:
-        st.info("🌐 **Settore Indicativo (Terreni di Terzi - Distretto)**\n\n*Non puoi impostare fasi colturali o caricare foto private per i terreni dei vicini. Puoi aggiornare la stima del rischio DSS o registrare segnalazioni di zona.*")
+        st.info("🌐 **Settore Indicativo (Terreni di Terzi - Distretto)**\n\n*Puoi aggiornare lo stato del semaforo di rischio fitosanitario calcolato o il numero di segnalazioni.*")
         
         c_edit1, c_edit2 = st.columns(2)
         new_color = c_edit1.selectbox(
-            "Rischio Calcolato DSS per la Zona:", 
+            "Semaforo Rischio DSS Zona:", 
             ["🔴 Alto Rischio (#f44336)", "🟡 Medio Rischio (#ff9800)", "🟢 Basso Rischio (#4caf50)"],
             index=0 if target_cell["color"] == "#f44336" else (1 if target_cell["color"] == "#ff9800" else 2)
         )
-        new_risk_text = c_edit1.text_input("Descrizione Rischio DSS / Anomalia:", value=target_cell["risk"])
-        new_reports = c_edit2.number_input("📲 Segnalazioni di Zona Ricevute:", value=int(target_cell["reports"]), min_value=0)
+        new_risk_text = c_edit1.text_input("Descrizione Rischio DSS / Avviso:", value=target_cell["risk"])
+        new_reports = c_edit2.number_input("📲 Segnalazioni Ricevute:", value=int(target_cell["reports"]), min_value=0)
         
-        if st.button("💾 Aggiorna Rischio Distretto"):
+        if st.button("💾 Aggiorna Semaforo Distretto"):
             color_hex = "#f44336" if "🔴" in new_color else ("#ff9800" if "🟡" in new_color else "#4caf50")
             target_cell["color"] = color_hex
             target_cell["risk"] = new_risk_text
             target_cell["reports"] = new_reports
-            st.success(f"Indice di rischio per '{selected_sector_name}' aggiornato!")
+            st.success(f"Semaforo rischio per '{selected_sector_name}' aggiornato!")
             st.rerun()
 
 
