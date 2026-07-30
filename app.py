@@ -126,7 +126,7 @@ def get_alerts():
         )
 
 
-# --- FUNZIONI PER GENERAZIONE GRIGLIA AD ALVEARE (ESAGONI CONTIGUI) ---
+# --- FUNZIONI E STATO PER GRIGLIA AD ALVEARE ---
 def get_hexagon_coords(center_lat, center_lon, radius_km):
     coords = []
     lat_deg_per_km = 1.0 / 111.0
@@ -141,9 +141,9 @@ def get_hexagon_coords(center_lat, center_lon, radius_km):
     return coords
 
 
-def generate_honeycomb_grid(center_lat, center_lon, radius_km=1.0, crop="Oliveto"):
+def init_honeycomb_state(crop="Oliveto"):
     risk_mapping = {
-        "Oliveto": ["Rischio Mosca dell'Olivo High", "Attacco Occhio di Pavone", "Stabile / Sotto Controllo"],
+        "Oliveto": ["Rischio Mosca High", "Attacco Occhio di Pavone", "Stabile / Sotto Controllo"],
         "Vigneto": ["Rischio Elevato Peronospora", "Presenza Oidio / Botrite", "Stabile / Sotto Controllo"],
         "Seminativo": ["Rischio Fusariosi Spiga", "Presenza Afidi", "Stabile / Sotto Controllo"],
         "Noccioleto": ["Rischio Cimice Asiatica", "Presenza Balanino", "Stabile / Sotto Controllo"],
@@ -151,24 +151,27 @@ def generate_honeycomb_grid(center_lat, center_lon, radius_km=1.0, crop="Oliveto
     }
     risks = risk_mapping.get(crop, risk_mapping["Altro"])
 
+    if "honeycomb_cells" not in st.session_state:
+        st.session_state.honeycomb_cells = [
+            {"id": "c0", "name": "Settore Centro (Campo)", "r": 0, "c": 0, "color": "#4caf50", "risk": risks[2], "reports": 0, "treatments": 1},
+            {"id": "c1", "name": "Settore Est (Collina)", "r": 1, "c": 0, "color": "#f44336", "risk": risks[0], "reports": 6, "treatments": 4},
+            {"id": "c2", "name": "Settore Ovest (Valle)", "r": -1, "c": 0, "color": "#ff9800", "risk": risks[1], "reports": 3, "treatments": 2},
+            {"id": "c3", "name": "Settore Nord", "r": 0, "c": 1, "color": "#4caf50", "risk": risks[2], "reports": 0, "treatments": 1},
+            {"id": "c4", "name": "Settore Sud", "r": 0, "c": -1, "color": "#ff9800", "risk": risks[1], "reports": 2, "treatments": 1},
+            {"id": "c5", "name": "Settore Sud-Est", "r": 1, "c": -1, "color": "#4caf50", "risk": risks[2], "reports": 1, "treatments": 0},
+            {"id": "c6", "name": "Settore Nord-Ovest", "r": -1, "c": 1, "color": "#f44336", "risk": risks[0], "reports": 5, "treatments": 3},
+        ]
+
+
+def generate_honeycomb_grid(center_lat, center_lon, radius_km=1.8):
     dx = math.sqrt(3) * radius_km
     dy = 1.5 * radius_km
 
     lat_deg_per_km = 1.0 / 111.0
     lon_deg_per_km = 1.0 / (111.0 * math.cos(math.radians(center_lat)))
 
-    demo_cells = [
-        {"r": 0, "c": 0, "color": "#4caf50", "risk": risks[2], "reports": 0, "treatments": 1, "name": "Settore Centro (Campo)"},
-        {"r": 1, "c": 0, "color": "#f44336", "risk": risks[0], "reports": 6, "treatments": 4, "name": "Settore Est (Collina)"},
-        {"r": -1, "c": 0, "color": "#ff9800", "risk": risks[1], "reports": 3, "treatments": 2, "name": "Settore Ovest (Valle)"},
-        {"r": 0, "c": 1, "color": "#4caf50", "risk": risks[2], "reports": 0, "treatments": 1, "name": "Settore Nord"},
-        {"r": 0, "c": -1, "color": "#ff9800", "risk": risks[1], "reports": 2, "treatments": 1, "name": "Settore Sud"},
-        {"r": 1, "c": -1, "color": "#4caf50", "risk": risks[2], "reports": 1, "treatments": 0, "name": "Settore Sud-Est"},
-        {"r": -1, "c": 1, "color": "#f44336", "risk": risks[0], "reports": 5, "treatments": 3, "name": "Settore Nord-Ovest"},
-    ]
-
     hexagons = []
-    for cell in demo_cells:
+    for cell in st.session_state.honeycomb_cells:
         r, c = cell["r"], cell["c"]
         x_km = c * dx + (dx / 2.0 if abs(r) % 2 == 1 else 0.0)
         y_km = r * dy
@@ -177,6 +180,7 @@ def generate_honeycomb_grid(center_lat, center_lon, radius_km=1.0, crop="Oliveto
         c_lon = center_lon + (x_km * lon_deg_per_km)
 
         hexagons.append({
+            "id": cell["id"],
             "coords": get_hexagon_coords(c_lat, c_lon, radius_km),
             "color": cell["color"],
             "name": cell["name"],
@@ -403,6 +407,7 @@ if "clicked_lon" not in st.session_state:
 if "last_registered_click" not in st.session_state:
     st.session_state.last_registered_click = (st.session_state.active_lat, st.session_state.active_lon)
 
+init_honeycomb_state(st.session_state.active_crop)
 
 # --- SIDEBAR: GESTIONE CAMPI ---
 st.sidebar.title("🏡 I Miei Campi")
@@ -505,54 +510,12 @@ st.info(f"💡 **Diagnosi DSS**: {risk_description}")
 
 st.markdown("---")
 
-# --- PANNELLO DI DEBUG METEO & API ---
-with st.expander("🛠️ Pannello di Debug API Meteo & Set Dati (ICON-D2 2.2km)"):
-    st.write("Verifica dei parametri scaricati dal modello ad alta risoluzione (inclusi umidità, vento, CAPE e suolo).")
-    st.write(f"**Coordinate attive:** Lat `{st.session_state.active_lat}` | Lon `{st.session_state.active_lon}`")
-    if w_data:
-        st.success("Connessione API riuscita con successo!")
-        hourly_sample = {}
-        if "hourly" in w_data:
-            h = w_data["hourly"]
-            hourly_sample = {
-                "time_sample": h.get("time", [])[:5],
-                "temperature_2m": h.get("temperature_2m", [])[:5],
-                "relative_humidity_2m": h.get("relative_humidity_2m", [])[:5],
-                "wind_gusts_10m": h.get("wind_gusts_10m", [])[:5],
-                "cape": h.get("cape", [])[:5],
-                "soil_moisture_0_to_7cm": h.get("soil_moisture_0_to_7cm", [])[:5]
-            }
-        st.json(hourly_sample)
-    else:
-        st.error("Errore: Nessun dato ricevuto dall'API Open-Meteo.")
-
-st.markdown("---")
-
-# --- HUB BOLLETTINI FITOSANITARI & PORTALE REGIONALE ---
-st.subheader("📰 Bollettini Fitosanitari & Portale Regionale Ufficiale")
-
-real_bulletin = fetch_real_bulletin()
-
-st.markdown(f"""
-    <div class="bulletin-card">
-        <h4>📌 {real_bulletin['title']}</h4>
-        <p>{real_bulletin['desc']}</p>
-        <div style="margin-top: 10px;">
-            <b>🏛️ Portali Istituzionali di Riferimento:</b><br>
-            <a href="https://www.sian.it" target="_blank" class="portal-link">Portale Nazionale SIAN</a>
-            <a href="{real_bulletin['link']}" target="_blank" class="portal-link" style="border-color: #d32f2f; color: #d32f2f;">News Fitosanitarie Nazionali</a>
-        </div>
-    </div>
-""", unsafe_allow_html=True)
-
-st.markdown("---")
-
-# --- MAPPA INTERATTIVA CON GRIGLIA AD ALVEARE (ESAGONI CONTIGUI) ---
+# --- MAPPA INTERATTIVA CON GRIGLIA AD ALVEARE ESPANSA ---
 st.subheader("🗺️ Mappa Territoriale & Mappatura ad Alveare")
 
 m = folium.Map(
     location=[st.session_state.active_lat, st.session_state.active_lon],
-    zoom_start=13,
+    zoom_start=12,
 )
 
 # Marker Campo Attivo
@@ -562,12 +525,11 @@ folium.Marker(
     icon=folium.Icon(color="green", icon="leaf"),
 ).add_to(m)
 
-# Generazione Griglia ad Alveare attorno al Campo
+# Generazione Griglia ad Alveare Espansa (Raggio 1.8 km)
 hex_grid = generate_honeycomb_grid(
     st.session_state.active_lat, 
     st.session_state.active_lon, 
-    radius_km=0.9, 
-    crop=st.session_state.active_crop
+    radius_km=1.8
 )
 
 for h in hex_grid:
@@ -577,7 +539,7 @@ for h in hex_grid:
         🌱 Coltura: <b>{st.session_state.active_crop}</b><br>
         ⚠️ Stato: <b>{h['risk']}</b><br>
         📲 Segnalazioni WhatsApp: <b>{h['reports']}</b><br>
-        🚜 Trattamenti Registrati (Anonimi): <b>{h['treatments']}</b>
+        🚜 Trattamenti Registrati: <b>{h['treatments']}</b>
     </div>
     """
     
@@ -607,7 +569,7 @@ if not alerts_df.empty:
             icon=folium.Icon(color="red", icon="warning", prefix="fa"),
         ).add_to(m)
 
-map_data = st_folium(m, width=750, height=420, key="agri_map")
+map_data = st_folium(m, width=750, height=450, key="agri_map")
 
 if map_data and map_data.get("last_clicked"):
     cl_lat = round(map_data["last_clicked"]["lat"], 5)
@@ -617,6 +579,38 @@ if map_data and map_data.get("last_clicked"):
         st.session_state.clicked_lat = cl_lat
         st.session_state.clicked_lon = cl_lon
         st.session_state.last_registered_click = (cl_lat, cl_lon)
+        st.rerun()
+
+
+# --- PANNELLO DI AGGIORNAMENTO MANUALE ALVEARE (ADMIN) ---
+with st.expander("🛠️ Aggiorna Stato Esagoni / Registra Segnalazioni e Trattamenti"):
+    st.caption("Modifica direttamente lo stato delle celle dell'alveare per simulare o registrare le risposte degli agricoltori.")
+    
+    sector_names = [cell["name"] for cell in st.session_state.honeycomb_cells]
+    selected_sector_name = st.selectbox("Seleziona Settore da Aggiornare:", sector_names)
+    
+    # Trova la cella selezionata
+    target_cell = next(item for item in st.session_state.honeycomb_cells if item["name"] == selected_sector_name)
+    
+    c_edit1, c_edit2, c_edit3 = st.columns(3)
+    
+    new_color = c_edit1.selectbox(
+        "Livello di Rischio (Colore):", 
+        ["🔴 Alto Rischio (#f44336)", "🟡 Medio Rischio (#ff9800)", "🟢 Basso Rischio (#4caf50)"],
+        index=0 if target_cell["color"] == "#f44336" else (1 if target_cell["color"] == "#ff9800" else 2)
+    )
+    
+    new_risk_text = c_edit1.text_input("Descrizione Stato/Rischio:", value=target_cell["risk"])
+    new_reports = c_edit2.number_input("📲 N° Segnalazioni WhatsApp:", value=int(target_cell["reports"]), min_value=0)
+    new_treatments = c_edit3.number_input("🚜 N° Trattamenti Eseguiti:", value=int(target_cell["treatments"]), min_value=0)
+    
+    if st.button("💾 Aggiorna Esagone sulla Mappa"):
+        color_hex = "#f44336" if "🔴" in new_color else ("#ff9800" if "🟡" in new_color else "#4caf50")
+        target_cell["color"] = color_hex
+        target_cell["risk"] = new_risk_text
+        target_cell["reports"] = new_reports
+        target_cell["treatments"] = new_treatments
+        st.success(f"Settore '{selected_sector_name}' aggiornato!")
         st.rerun()
 
 
@@ -697,14 +691,23 @@ with t_meteo:
     if not df_meteo.empty:
         st.dataframe(df_meteo, use_container_width=True, hide_index=True)
 
-# --- ESPORTAZIONE UNIFICATA REPORT ---
+
+# --- ESPORTAZIONE UNIFICATA REPORT (CORRETTO ERRORE KEYERROR) ---
 st.markdown("#### 📥 Esporta Report Storico (Meteo + Satellite)")
 exp_col1, exp_col2 = st.columns(2)
 
-if not df_sat.empty or not df_meteo.empty:
+# Unione in sicurezza senza causare KeyError
+if not df_sat.empty and "Data" in df_sat.columns and not df_meteo.empty and "Data" in df_meteo.columns:
     df_combined = pd.merge(df_meteo, df_sat, on="Data", how="outer").sort_values(by="Data", ascending=False)
-    csv_report = df_combined.to_csv(index=False).encode("utf-8")
+elif not df_meteo.empty:
+    df_combined = df_meteo
+elif not df_sat.empty:
+    df_combined = df_sat
+else:
+    df_combined = pd.DataFrame()
 
+if not df_combined.empty:
+    csv_report = df_combined.to_csv(index=False).encode("utf-8")
     exp_col1.download_button(
         label="📊 Scarica Tabellone Completo CSV (Excel)",
         data=csv_report,
@@ -813,3 +816,22 @@ with col_table:
         )
     else:
         st.info("Nessun trattamento registrato per questo campo.")
+
+st.markdown("---")
+
+# --- HUB BOLLETTINI FITOSANITARI (SPOSTATO IN FONDO) ---
+st.subheader("📰 Bollettini Fitosanitari & Portale Regionale Ufficiale")
+
+real_bulletin = fetch_real_bulletin()
+
+st.markdown(f"""
+    <div class="bulletin-card">
+        <h4>📌 {real_bulletin['title']}</h4>
+        <p>{real_bulletin['desc']}</p>
+        <div style="margin-top: 10px;">
+            <b>🏛️ Portali Istituzionali di Riferimento:</b><br>
+            <a href="https://www.sian.it" target="_blank" class="portal-link">Portale Nazionale SIAN</a>
+            <a href="{real_bulletin['link']}" target="_blank" class="portal-link" style="border-color: #d32f2f; color: #d32f2f;">News Fitosanitarie Nazionali</a>
+        </div>
+    </div>
+""", unsafe_allow_html=True)
