@@ -1,3 +1,4 @@
+import base64
 import io
 import json
 import math
@@ -153,13 +154,13 @@ def init_honeycomb_state(crop="Oliveto"):
 
     if "honeycomb_cells" not in st.session_state:
         st.session_state.honeycomb_cells = [
-            {"id": "c0", "name": "Settore Centro (Campo)", "r": 0, "c": 0, "color": "#4caf50", "risk": risks[2], "reports": 0, "treatments": 1},
-            {"id": "c1", "name": "Settore Est (Collina)", "r": 1, "c": 0, "color": "#f44336", "risk": risks[0], "reports": 6, "treatments": 4},
-            {"id": "c2", "name": "Settore Ovest (Valle)", "r": -1, "c": 0, "color": "#ff9800", "risk": risks[1], "reports": 3, "treatments": 2},
-            {"id": "c3", "name": "Settore Nord", "r": 0, "c": 1, "color": "#4caf50", "risk": risks[2], "reports": 0, "treatments": 1},
-            {"id": "c4", "name": "Settore Sud", "r": 0, "c": -1, "color": "#ff9800", "risk": risks[1], "reports": 2, "treatments": 1},
-            {"id": "c5", "name": "Settore Sud-Est", "r": 1, "c": -1, "color": "#4caf50", "risk": risks[2], "reports": 1, "treatments": 0},
-            {"id": "c6", "name": "Settore Nord-Ovest", "r": -1, "c": 1, "color": "#f44336", "risk": risks[0], "reports": 5, "treatments": 3},
+            {"id": "c0", "name": "Settore Centro (Campo)", "r": 0, "c": 0, "color": "#4caf50", "risk": risks[2], "reports": 0, "treatments": 1, "validated": True, "photo_b64": None},
+            {"id": "c1", "name": "Settore Est (Collina)", "r": 1, "c": 0, "color": "#f44336", "risk": risks[0], "reports": 6, "treatments": 4, "validated": True, "photo_b64": None},
+            {"id": "c2", "name": "Settore Ovest (Valle)", "r": -1, "c": 0, "color": "#ff9800", "risk": risks[1], "reports": 3, "treatments": 2, "validated": False, "photo_b64": None},
+            {"id": "c3", "name": "Settore Nord", "r": 0, "c": 1, "color": "#4caf50", "risk": risks[2], "reports": 0, "treatments": 1, "validated": True, "photo_b64": None},
+            {"id": "c4", "name": "Settore Sud", "r": 0, "c": -1, "color": "#ff9800", "risk": risks[1], "reports": 2, "treatments": 1, "validated": False, "photo_b64": None},
+            {"id": "c5", "name": "Settore Sud-Est", "r": 1, "c": -1, "color": "#4caf50", "risk": risks[2], "reports": 1, "treatments": 0, "validated": True, "photo_b64": None},
+            {"id": "c6", "name": "Settore Nord-Ovest", "r": -1, "c": 1, "color": "#f44336", "risk": risks[0], "reports": 5, "treatments": 3, "validated": True, "photo_b64": None},
         ]
 
 
@@ -186,7 +187,9 @@ def generate_honeycomb_grid(center_lat, center_lon, radius_km=1.8):
             "name": cell["name"],
             "risk": cell["risk"],
             "reports": cell["reports"],
-            "treatments": cell["treatments"]
+            "treatments": cell["treatments"],
+            "validated": cell.get("validated", False),
+            "photo_b64": cell.get("photo_b64", None)
         })
 
     return hexagons
@@ -510,7 +513,7 @@ st.info(f"💡 **Diagnosi DSS**: {risk_description}")
 
 st.markdown("---")
 
-# --- MAPPA INTERATTIVA CON GRIGLIA AD ALVEARE ESPANSA ---
+# --- MAPPA INTERATTIVA CON ALVEARE E FOTO VALIDATE ---
 st.subheader("🗺️ Mappa Territoriale & Mappatura ad Alveare")
 
 m = folium.Map(
@@ -525,7 +528,7 @@ folium.Marker(
     icon=folium.Icon(color="green", icon="leaf"),
 ).add_to(m)
 
-# Generazione Griglia ad Alveare Espansa (Raggio 1.8 km)
+# Generazione Griglia ad Alveare (Raggio 1.8 km)
 hex_grid = generate_honeycomb_grid(
     st.session_state.active_lat, 
     st.session_state.active_lon, 
@@ -533,13 +536,21 @@ hex_grid = generate_honeycomb_grid(
 )
 
 for h in hex_grid:
+    status_badge = "<span style='color: #2e7d32; font-weight: bold;'>🟢 VERIFICATO DA AGRONOMO</span>" if h["validated"] else "<span style='color: #e65100; font-weight: bold;'>🟡 IN ATTESA DI VERIFICA</span>"
+    
+    img_html = ""
+    if h["photo_b64"]:
+        img_html = f"""<div style='margin-top: 8px;'><b style='font-size:11px;'>📸 Foto dal Campo:</b><br><img src='data:image/png;base64,{h['photo_b64']}' style='width: 100%; max-width: 200px; border-radius: 6px; margin-top: 4px; border: 1px solid #ccc;'/></div>"""
+    
     popup_html = f"""
-    <div style='font-family: sans-serif; font-size: 13px; min-width: 180px;'>
+    <div style='font-family: sans-serif; font-size: 13px; min-width: 200px;'>
         <b style='font-size: 14px; color: #1b5e20;'>{h['name']}</b><br>
         🌱 Coltura: <b>{st.session_state.active_crop}</b><br>
         ⚠️ Stato: <b>{h['risk']}</b><br>
+        📋 Stato Validazione: {status_badge}<br>
         📲 Segnalazioni WhatsApp: <b>{h['reports']}</b><br>
         🚜 Trattamenti Registrati: <b>{h['treatments']}</b>
+        {img_html}
     </div>
     """
     
@@ -550,7 +561,7 @@ for h in hex_grid:
         fill=True,
         fill_color=h["color"],
         fill_opacity=0.35,
-        popup=folium.Popup(popup_html, max_width=300)
+        popup=folium.Popup(popup_html, max_width=320)
     ).add_to(m)
 
 if (st.session_state.clicked_lat != st.session_state.active_lat or st.session_state.clicked_lon != st.session_state.active_lon):
@@ -582,14 +593,13 @@ if map_data and map_data.get("last_clicked"):
         st.rerun()
 
 
-# --- PANNELLO DI AGGIORNAMENTO MANUALE ALVEARE (ADMIN) ---
-with st.expander("🛠️ Aggiorna Stato Esagoni / Registra Segnalazioni e Trattamenti"):
-    st.caption("Modifica direttamente lo stato delle celle dell'alveare per simulare o registrare le risposte degli agricoltori.")
+# --- PANNELLO DI AGGIORNAMENTO MANUALE & UPLOAD FOTO (ADMIN) ---
+with st.expander("🛠️ Aggiorna Stato Esagoni / Carica Foto & Valida (Pannello Admin)"):
+    st.caption("Aggiorna lo stato dei settori, carica la foto inviata dall'agricoltore e imposta la firma dell'agronomo.")
     
     sector_names = [cell["name"] for cell in st.session_state.honeycomb_cells]
-    selected_sector_name = st.selectbox("Seleziona Settore da Aggiornare:", sector_names)
+    selected_sector_name = st.selectbox("Seleziona Settore da Modificare:", sector_names)
     
-    # Trova la cella selezionata
     target_cell = next(item for item in st.session_state.honeycomb_cells if item["name"] == selected_sector_name)
     
     c_edit1, c_edit2, c_edit3 = st.columns(3)
@@ -600,16 +610,30 @@ with st.expander("🛠️ Aggiorna Stato Esagoni / Registra Segnalazioni e Tratt
         index=0 if target_cell["color"] == "#f44336" else (1 if target_cell["color"] == "#ff9800" else 2)
     )
     
-    new_risk_text = c_edit1.text_input("Descrizione Stato/Rischio:", value=target_cell["risk"])
+    new_risk_text = c_edit1.text_input("Descrizione Rischio:", value=target_cell["risk"])
     new_reports = c_edit2.number_input("📲 N° Segnalazioni WhatsApp:", value=int(target_cell["reports"]), min_value=0)
     new_treatments = c_edit3.number_input("🚜 N° Trattamenti Eseguiti:", value=int(target_cell["treatments"]), min_value=0)
     
-    if st.button("💾 Aggiorna Esagone sulla Mappa"):
+    st.markdown("---")
+    st.markdown("##### 📸 Validazione & Foto Campo")
+    col_photo1, col_photo2 = st.columns(2)
+    
+    is_validated = col_photo1.checkbox("✅ Approvato / Validato da Agronomo", value=target_cell.get("validated", False))
+    uploaded_file = col_photo2.file_uploader("Carica Foto Anomalia/Trappola (PNG/JPG):", type=["png", "jpg", "jpeg"])
+    
+    if st.button("💾 Applica Modifiche Esagone"):
         color_hex = "#f44336" if "🔴" in new_color else ("#ff9800" if "🟡" in new_color else "#4caf50")
         target_cell["color"] = color_hex
         target_cell["risk"] = new_risk_text
         target_cell["reports"] = new_reports
         target_cell["treatments"] = new_treatments
+        target_cell["validated"] = is_validated
+        
+        if uploaded_file is not None:
+            bytes_data = uploaded_file.getvalue()
+            b64_str = base64.b64encode(bytes_data).decode()
+            target_cell["photo_b64"] = b64_str
+            
         st.success(f"Settore '{selected_sector_name}' aggiornato!")
         st.rerun()
 
@@ -692,11 +716,10 @@ with t_meteo:
         st.dataframe(df_meteo, use_container_width=True, hide_index=True)
 
 
-# --- ESPORTAZIONE UNIFICATA REPORT (CORRETTO ERRORE KEYERROR) ---
+# --- ESPORTAZIONE UNIFICATA REPORT ---
 st.markdown("#### 📥 Esporta Report Storico (Meteo + Satellite)")
 exp_col1, exp_col2 = st.columns(2)
 
-# Unione in sicurezza senza causare KeyError
 if not df_sat.empty and "Data" in df_sat.columns and not df_meteo.empty and "Data" in df_meteo.columns:
     df_combined = pd.merge(df_meteo, df_sat, on="Data", how="outer").sort_values(by="Data", ascending=False)
 elif not df_meteo.empty:
@@ -819,7 +842,7 @@ with col_table:
 
 st.markdown("---")
 
-# --- HUB BOLLETTINI FITOSANITARI (SPOSTATO IN FONDO) ---
+# --- HUB BOLLETTINI FITOSANITARI (IN FONDO) ---
 st.subheader("📰 Bollettini Fitosanitari & Portale Regionale Ufficiale")
 
 real_bulletin = fetch_real_bulletin()
