@@ -156,7 +156,6 @@ def analyze_weather_risks(w_data):
     wcodes = hourly.get("weathercode", [])
     temps = hourly.get("temperature_2m", [])
 
-    # Analizziamo le prossime 48 ore per intercettare pericoli imminenti
     for i in range(min(48, len(times))):
         c = capes[i] if i < len(capes) and capes[i] is not None else 0
         g = gusts[i] if i < len(gusts) and gusts[i] is not None else 0
@@ -164,7 +163,6 @@ def analyze_weather_risks(w_data):
         temp = temps[i] if i < len(temps) and temps[i] is not None else 20
         t_str = times[i]
 
-        # Condizione 1: Rischio Temporale Forte / Grandine (CAPE alto + Raffiche forti o codice temporale WMO 95,96,99)
         if (c > 1000 and g > 45) or wc in [95, 96, 99]:
             desc = (f"⚠️ Rischio Temporale Severo / Grandine previsto per il {t_str}. "
                     f"Raffiche stimate a {g} km/h e instabilità elevata (CAPE {c:.0f} J/kg).")
@@ -173,7 +171,6 @@ def analyze_weather_risks(w_data):
                 "desc": desc
             }
 
-        # Condizione 2: Rischio Gelata (Temperatura sotto i 2°C)
         if temp < 2.0:
             desc = f"❄️ Rischio Gelata / Temperature critiche ({temp}°C) previste per il {t_str}."
             return "ATTENZIONE - GELATA 🟡", desc, {
@@ -412,15 +409,12 @@ st.caption(
     f"📍 **Campo Attivo**: {st.session_state.active_field_name} ({st.session_state.active_crop}) | **Lat**: {st.session_state.active_lat:.5f} | **Lon**: {st.session_state.active_lon:.5f}"
 )
 
-# Fetch Dati Meteo & Satellite
 w_data = fetch_weather_advanced(st.session_state.active_lat, st.session_state.active_lon)
 sat_json = fetch_satellite_statistics(st.session_state.active_lat, st.session_state.active_lon)
 df_sat = parse_satellite_json(sat_json)
 
-# Analisi Automatica Rischi Meteo (Grandine, Temporali, Gelate)
 risk_level, risk_description, pending_alert = analyze_weather_risks(w_data)
 
-# Prepariamo la tabella meteo giornaliera
 df_meteo = pd.DataFrame()
 if w_data and "daily" in w_data:
     d = w_data["daily"]
@@ -452,13 +446,12 @@ st.info(f"💡 **Diagnosi DSS**: {risk_description}")
 
 st.markdown("---")
 
-# --- PANNELLO DI DEBUG METEO & API (Verifica Modello ICON-D2 e set completo) ---
+# --- PANNELLO DI DEBUG METEO & API ---
 with st.expander("🛠️ Pannello di Debug API Meteo & Set Dati (ICON-D2 2.2km)"):
     st.write("Verifica dei parametri scaricati dal modello ad alta risoluzione (inclusi umidità, vento, CAPE e suolo).")
     st.write(f"**Coordinate attive:** Lat `{st.session_state.active_lat}` | Lon `{st.session_state.active_lon}`")
     if w_data:
         st.success("Connessione API riuscita con successo!")
-        # Mostriamo un estratto orario recente per debugging
         hourly_sample = {}
         if "hourly" in w_data:
             h = w_data["hourly"]
@@ -476,7 +469,7 @@ with st.expander("🛠️ Pannello di Debug API Meteo & Set Dati (ICON-D2 2.2km)
 
 st.markdown("---")
 
-# --- SEZIONE: HUB BOLLETTINI FITOSANITARI & PORTALE REGIONALE (Pulito) ---
+# --- HUB BOLLETTINI FITOSANITARI & PORTALE REGIONALE ---
 st.subheader("📰 Bollettini Fitosanitari & Portale Regionale Ufficiale")
 
 real_bulletin = fetch_real_bulletin()
@@ -495,39 +488,50 @@ st.markdown(f"""
 
 st.markdown("---")
 
-# --- MAPPA INTERATTIVA ---
-st.subheader("🗺️ Mappa Territoriale")
+# --- MAPPA INTERATTIVA CON GRIGLIA TERRITORIALE (DEMO) ---
+st.subheader("🗺️ Mappa Territoriale & Griglia di Analisi Anonima")
 
 m = folium.Map(
     location=[st.session_state.active_lat, st.session_state.active_lon],
     zoom_start=13,
 )
 
+# Campo Attivo
 folium.Marker(
     [st.session_state.active_lat, st.session_state.active_lon],
     popup=f"Campo Attivo: {st.session_state.active_field_name} ({st.session_state.active_crop})",
     icon=folium.Icon(color="green", icon="leaf"),
 ).add_to(m)
 
+# Generazione Griglia Demo Intorno al Campo (Celle Anonime di Monitoraggio)
 lat_c, lon_c = st.session_state.active_lat, st.session_state.active_lon
-delta_lat, delta_lon = 0.012, 0.018
+d_lat, d_lon = 0.008, 0.012
 
-polygon_coords = [
-    [lat_c + delta_lat, lon_c - delta_lon],
-    [lat_c + delta_lat, lon_c + delta_lon],
-    [lat_c - delta_lat, lon_c + delta_lon],
-    [lat_c - delta_lat, lon_c - delta_lon],
+grid_cells = [
+    {"name": "Cella Nord-Est (Zona Alta)", "lat_offset": d_lat, "lon_offset": d_lon, "color": "#ff9800", "treatments": 3, "risk": "Rischio Fungino Medio"},
+    {"name": "Cella Nord-Ovest (Valle)", "lat_offset": d_lat, "lon_offset": -d_lon, "color": "#4caf50", "treatments": 1, "risk": "Stabile"},
+    {"name": "Cella Sud-Est (Collina)", "lat_offset": -d_lat, "lon_offset": d_lon, "color": "#f44336", "treatments": 4, "risk": "Alto Rischio Infezione"},
+    {"name": "Cella Sud-Ovest (Bosco)", "lat_offset": -d_lat, "lon_offset": -d_lon, "color": "#4caf50", "treatments": 0, "risk": "Stabile"},
 ]
 
-folium.Polygon(
-    locations=polygon_coords,
-    color="#2e7d32",
-    weight=2,
-    fill=True,
-    fill_color="#2e7d32",
-    fill_opacity=0.25,
-    popup=f"<b>Area Monitorata:</b> {st.session_state.active_field_name}",
-).add_to(m)
+for cell in grid_cells:
+    c_lat = lat_c + cell["lat_offset"]
+    c_lon = lon_c + cell["lon_offset"]
+    poly_box = [
+        [c_lat + d_lat/2, c_lon - d_lon/2],
+        [c_lat + d_lat/2, c_lon + d_lon/2],
+        [c_lat - d_lat/2, c_lon + d_lon/2],
+        [c_lat - d_lat/2, c_lon - d_lon/2],
+    ]
+    folium.Polygon(
+        locations=poly_box,
+        color=cell["color"],
+        weight=1,
+        fill=True,
+        fill_color=cell["color"],
+        fill_opacity=0.3,
+        popup=f"<b>{cell['name']}</b><br>Stato: {cell['risk']}<br>Trattamenti Registrati (Anonimi): <b>{cell['treatments']}</b>",
+    ).add_to(m)
 
 if (st.session_state.clicked_lat != st.session_state.active_lat or st.session_state.clicked_lon != st.session_state.active_lon):
     folium.Marker(
@@ -558,14 +562,13 @@ if map_data and map_data.get("last_clicked"):
         st.rerun()
 
 
-# --- GENERATORE ALLERTA WHATSAPP (Con supporto automatico per grandine/gelate) ---
+# --- GENERATORE ALLERTA WHATSAPP ---
 with st.expander("📱 Genera Allerta WhatsApp per Agricoltori (Test 1-Click)"):
     st.caption("Crea il messaggio personalizzato da inviare via WhatsApp per il campo attivo.")
 
     wa_crop = st.session_state.active_crop
     wa_field = st.session_state.active_field_name
 
-    # Se c'è un'allerta automatica pendente, la usiamo come base per il messaggio
     default_msg_content = risk_description if pending_alert else "Condizioni stabili. Verifica lo stato colturale."
 
     msg_template = (
@@ -583,7 +586,6 @@ with st.expander("📱 Genera Allerta WhatsApp per Agricoltori (Test 1-Click)"):
         </div>
     """, unsafe_allow_html=True)
 
-    # Se c'è un'allerta automatica, offri il tasto rapido per salvarla nel DB delle allerte
     if pending_alert:
         if st.button("🚨 Registra questa Allerta nel Database Storico"):
             add_alert(pending_alert["type"], pending_alert["desc"], st.session_state.active_lat, st.session_state.active_lon)
