@@ -1,7 +1,5 @@
 import base64
-import io
 import math
-import random
 import re
 import sqlite3
 import urllib.parse
@@ -30,6 +28,7 @@ css_custom = """
     .bulletin-card {background-color: #f0f7f4; border-left: 5px solid #2e7d32; padding: 15px; margin-bottom: 15px; border-radius: 6px;}
     .wa-preview {background-color: #e5ddd5; border-radius: 8px; padding: 12px; font-family: sans-serif; color: #111; margin-top: 10px;}
     .wa-bubble {background-color: #dcf8c6; padding: 8px 12px; border-radius: 7.5px; margin-bottom: 5px; font-size: 14px;}
+    .info-banner {background-color: #e8f5e9; border-left: 6px solid #2e7d32; padding: 16px; border-radius: 8px; margin-top: 15px; margin-bottom: 20px;}
     </style>
 """
 st.markdown(css_custom, unsafe_allow_html=True)
@@ -53,38 +52,46 @@ def init_db():
         conn.commit()
 
 
-def force_seed_tavernelle_15_fields():
-    """Forza il popolamento pulito dei 15 campi Tavernelle 001 - 015"""
+def force_seed_organic_tavernelle_fields():
+    """Popola il DB con 15 campi distribuiti in modo organico e sfalsato attorno a Tavernelle"""
     with get_db_connection() as conn:
         c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM fields WHERE name LIKE 'Tavernelle %'")
-        count = c.fetchone()[0]
+        c.execute("DELETE FROM fields")  # Reset pulito per garantire le nuove coordinate sfalsate
 
-        # Se non ci sono esattamente i 15 campi formattati correttamente, ricrea la griglia
-        if count < 15:
-            c.execute("DELETE FROM fields")  # Pulisce vecchi record errati come 'tavernelle'
-            base_lat, base_lon = 43.007721, 12.146461
-            crops = ["Vigneto", "Oliveto", "Seminativo", "Noccioleto"]
+        base_lat, base_lon = 43.007721, 12.146461
+        crops = ["Vigneto Sangiovese", "Oliveto Frantoio", "Seminativo Grano", "Noccioleto", "Vigneto Trebbiano"]
 
-            idx = 1
-            for row in range(4):
-                for col in range(4):
-                    if idx <= 15:
-                        name = f"Tavernelle {idx:03d}"
-                        crop = crops[(idx - 1) % len(crops)]
-                        # Distanzia i campi in modo uniforme attorno a Tavernelle
-                        f_lat = base_lat + (row - 1.5) * 0.006
-                        f_lon = base_lon + (col - 1.5) * 0.009
-                        c.execute(
-                            "INSERT INTO fields (name, crop, lat, lon) VALUES (?, ?, ?, ?)",
-                            (name, crop, f_lat, f_lon),
-                        )
-                        idx += 1
-            conn.commit()
+        # Coordinate realistiche e sfalsate (non a scacchiera)
+        staggered_offsets = [
+            (0.0031, 0.0042),
+            (-0.0045, 0.0078),
+            (0.0082, -0.0035),
+            (-0.0061, -0.0089),
+            (0.0115, 0.0021),
+            (-0.0122, 0.0045),
+            (0.0018, -0.0112),
+            (0.0067, 0.0095),
+            (-0.0084, 0.0121),
+            (0.0141, -0.0078),
+            (-0.0025, 0.0152),
+            (0.0098, 0.0134),
+            (-0.0135, -0.0041),
+            (0.0052, -0.0158),
+            (-0.0091, -0.0142),
+        ]
+
+        for idx, (off_lat, off_lon) in enumerate(staggered_offsets, start=1):
+            name = f"Tavernelle {idx:03d}"
+            crop = crops[(idx - 1) % len(crops)]
+            c.execute(
+                "INSERT INTO fields (name, crop, lat, lon) VALUES (?, ?, ?, ?)",
+                (name, crop, base_lat + off_lat, base_lon + off_lon),
+            )
+        conn.commit()
 
 
 init_db()
-force_seed_tavernelle_15_fields()
+force_seed_organic_tavernelle_fields()
 
 
 def get_fields():
@@ -116,28 +123,8 @@ def get_treatments(field_name=None):
         )
 
 
-def add_alert(alert_type, description, lat, lon):
-    with get_db_connection() as conn:
-        c = conn.cursor()
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-        c.execute(
-            "INSERT INTO alerts (created_at, alert_type, description, lat, lon) VALUES (?, ?, ?, ?, ?)",
-            (now_str, alert_type, description, lat, lon),
-        )
-        conn.commit()
-
-
-def get_alerts():
-    with get_db_connection() as conn:
-        return pd.read_sql(
-            "SELECT created_at, alert_type, description, lat, lon FROM alerts ORDER BY id DESC",
-            conn,
-        )
-
-
-# --- GEOMETRIA PERFETTA PER L'ALVEARE ---
-def get_hexagon_coords(center_lat, center_lon, radius_km=0.25):
-    """Calcola i 6 vertici dell'esagono"""
+# --- GEOMETRIA ESAGONI AD ALVEARE ---
+def get_hexagon_coords(center_lat, center_lon, radius_km=0.18):
     coords = []
     lat_deg_per_km = 1.0 / 111.0
     lon_deg_per_km = 1.0 / (111.0 * math.cos(math.radians(center_lat)))
@@ -151,9 +138,8 @@ def get_hexagon_coords(center_lat, center_lon, radius_km=0.25):
     return coords
 
 
-def get_adjacent_hexagon_centers(center_lat, center_lon, radius_km=0.25):
-    """Calcola i centri esatti dei 6 esagoni adiacenti perfettamente combacianti"""
-    dist_km = radius_km * math.sqrt(3)  # Distanza esatta centro-centro
+def get_adjacent_hexagon_centers(center_lat, center_lon, radius_km=0.18):
+    dist_km = radius_km * math.sqrt(3)
     lat_deg_per_km = 1.0 / 111.0
     lon_deg_per_km = 1.0 / (111.0 * math.cos(math.radians(center_lat)))
 
@@ -176,7 +162,7 @@ def get_active_field_data(field_name):
     init_field_state()
     if field_name not in st.session_state.field_data:
         st.session_state.field_data[field_name] = {
-            "notes": "Rilievo agronomico nella norma.",
+            "notes": "Stato vegetativo buono. Nessun sintomo visibile di malattia.",
             "treatments_count": 1,
             "validated": True,
             "photo_b64": None,
@@ -221,7 +207,7 @@ def analyze_weather_risks(w_data):
         t_str = times[i]
 
         if (c > 1000 and g > 45) or wc in [95, 96, 99]:
-            desc = f"⚠️ Rischio Temporale Severo / Grandine previsto per il {t_str}. Raffiche: {g} km/h."
+            desc = f"⚠️ Rischio Temporale Severo / Grandine previsto per il {t_str}."
             return "ATTENZIONE - GRANDINE 🔴", desc, {"type": "Rischio Grandine", "desc": desc}
 
         if temp < 2.0:
@@ -231,11 +217,11 @@ def analyze_weather_risks(w_data):
     return "NORMALE 🟢", "Nessuna criticità severa rilevata nelle prossime 48h.", None
 
 
-# --- SIDEBAR: SELEZIONE CAMPI TAVERNELLE ---
+# --- SIDEBAR: REGISTRO CAMPI ---
 fields_df = get_fields()
 
 st.sidebar.title("🌾 Distretto Tavernelle")
-st.sidebar.caption("Seleziona il campo dal registro (15 Campi)")
+st.sidebar.caption("Seleziona un campo dal registro (15 Campi Sfalsati)")
 
 field_options = fields_df["name"].tolist()
 
@@ -256,7 +242,7 @@ st.session_state.active_lon = active_row["lon"]
 
 st.sidebar.markdown("---")
 st.sidebar.info(
-    f"**Campo Selezionato:**\n"
+    f"**Campo Attivo:**\n"
     f"- **Nome:** {st.session_state.active_field_name}\n"
     f"- **Coltura:** {st.session_state.active_crop}\n"
     f"- **Lat:** {st.session_state.active_lat:.5f}\n"
@@ -267,34 +253,31 @@ active_field_data = get_active_field_data(st.session_state.active_field_name)
 
 # --- MAIN PAGE ---
 st.title("🌾 AgriDSS: Control Room Distretto Tavernelle")
-st.caption(f"📍 **Focus Campo**: {st.session_state.active_field_name} ({st.session_state.active_crop})")
+st.caption(f"📍 **Focus Attuale**: {st.session_state.active_field_name} ({st.session_state.active_crop})")
 
 w_data = fetch_weather_advanced(st.session_state.active_lat, st.session_state.active_lon)
 risk_level, risk_description, pending_alert = analyze_weather_risks(w_data)
 
 # --- METRIC CARDS ---
 col1, col2, col3 = st.columns(3)
-col1.metric("🛰️ Vigore Vegetativo (NDVI)", "0.72 (Ottimo)", "Sentinel-2 L2A")
+col1.metric("🛰️ Vigore Vegetativo (NDVI)", "0.74 (Ottimo)", "Sentinel-2 L2A")
 col2.metric("🛡️ Stato Fitosanitario DSS", risk_level)
 rain_sum = sum(w_data["daily"]["precipitation_sum"][:7]) if w_data and "daily" in w_data else 0.0
 col3.metric("🌧️ Pioggia 7gg (ICON 2.2km)", f"{rain_sum:.1f} mm")
 
-st.info(f"💡 **Diagnosi DSS per {st.session_state.active_field_name}**: {risk_description}")
-
 st.markdown("---")
 
-# --- MAPPA INTERATTIVA CON ALVEARE COMPATTO ---
+# --- MAPPA INTERATTIVA (VISTA GENERALE VS FOCUS) ---
 st.subheader("🗺️ Mappa Territoriale & Struttura ad Alveare")
 
 tipo_vista = st.radio(
     "Modalità Visualizzazione Mappa:",
-    ["🌍 Vista Globale Distretto (Tutti i 15 Campi)", "🎯 Focus Campo Selezionato con Alveare"],
+    ["🌍 Vista Generale Distretto (Tutti i 15 Campi con i propri Esagoni)", "🎯 Focus Campo Selezionato (Solo il Campo Attivo)"],
     horizontal=True,
 )
 
-# Impostazione centro e zoom ottimali
 if tipo_vista.startswith("🌍"):
-    center_lat, center_lon, zoom_level = 43.007721, 12.146461, 14
+    center_lat, center_lon, zoom_level = 43.007721, 12.146461, 13
 else:
     center_lat, center_lon, zoom_level = st.session_state.active_lat, st.session_state.active_lon, 15
 
@@ -311,47 +294,28 @@ stati_fittizi = [
     ("🟢 Sotto Controllo", "#4caf50"),
 ]
 
-# 1. DISEGNA I 15 CAMPI COME RETTANGOLI BEN DEFINITI
-all_bounds = []
-for idx, f in fields_df.iterrows():
-    f_lat, f_lon, f_name, f_crop = f["lat"], f["lon"], f["name"], f["crop"]
-    is_active = (f_name == st.session_state.active_field_name)
+# LOGICA MAPPA
+if tipo_vista.startswith("🌍"):
+    # VISTA GENERALE: Disegna TUTTI i campi con i loro rispettivi esagoni attorno
+    for idx, f in fields_df.iterrows():
+        f_lat, f_lon, f_name, f_crop = f["lat"], f["lon"], f["name"], f["crop"]
+        is_active = (f_name == st.session_state.active_field_name)
 
-    # Dimensioni rettangolo terreno
-    delta_lat, delta_lon = 0.0012, 0.0018
-    bounds = [[f_lat - delta_lat, f_lon - delta_lon], [f_lat + delta_lat, f_lon + delta_lon]]
-    all_bounds.extend(bounds)
-
-    rect_color = "#ffeb3b" if is_active else "#ffffff"
-    fill_color = "#fbc02d" if is_active else "#37474f"
-
-    folium.Rectangle(
-        bounds=bounds,
-        color=rect_color,
-        weight=4 if is_active else 2,
-        fill=True,
-        fill_color=fill_color,
-        fill_opacity=0.8 if is_active else 0.5,
-        tooltip=f"<b>{f_name}</b> ({f_crop})",
-    ).add_to(m)
-
-    # 2. DISEGNA L'ALVEARE PERFETTO ATTORNO AL CAMPO SELEZIONATO
-    if is_active or not tipo_vista.startswith("🌍"):
-        radius_km = 0.22  # Dimensione ideale esagoni
-        
-        # Esagono centrale (Campo attivo)
-        central_hex = get_hexagon_coords(f_lat, f_lon, radius_km=radius_km)
-        folium.Polygon(
-            locations=central_hex,
-            color="#2e7d32",
-            weight=3,
+        # Rettangolo Campo
+        delta_lat, delta_lon = 0.0010, 0.0014
+        bounds = [[f_lat - delta_lat, f_lon - delta_lon], [f_lat + delta_lat, f_lon + delta_lon]]
+        folium.Rectangle(
+            bounds=bounds,
+            color="#ffeb3b" if is_active else "#ffffff",
+            weight=4 if is_active else 2,
             fill=True,
-            fill_color="#4caf50",
-            fill_opacity=0.35,
-            popup=f"<b>📍 Central: {f_name}</b>",
+            fill_color="#fbc02d" if is_active else "#263238",
+            fill_opacity=0.85 if is_active else 0.6,
+            tooltip=f"<b>{f_name}</b> ({f_crop})",
         ).add_to(m)
 
-        # 6 Esagoni adiacenti perfettamente incastrati (Alveare)
+        # Corona di 6 esagoni per ogni campo
+        radius_km = 0.16
         adj_centers = get_adjacent_hexagon_centers(f_lat, f_lon, radius_km=radius_km)
         for s_idx, (c_lat, c_lon) in enumerate(adj_centers):
             diag, hex_col = stati_fittizi[(idx + s_idx) % len(stati_fittizi)]
@@ -359,27 +323,96 @@ for idx, f in fields_df.iterrows():
             folium.Polygon(
                 locations=sat_hex,
                 color=hex_col,
-                weight=2,
-                dash_array="4, 4",
+                weight=1.5,
+                dash_array="3, 3",
                 fill=True,
                 fill_color=hex_col,
-                fill_opacity=0.25,
-                popup=f"<b>Settore Distretto #{s_idx+1}</b><br>Rischio: {diag}",
+                fill_opacity=0.3,
+                popup=f"<b>{f_name} - Settore #{s_idx+1}</b><br>Rischio: {diag}",
             ).add_to(m)
+
+else:
+    # VISTA FOCUS: Disegna SOLO il campo selezionato e i suoi 6 esagoni
+    f_lat, f_lon = st.session_state.active_lat, st.session_state.active_lon
+    f_name, f_crop = st.session_state.active_field_name, st.session_state.active_crop
+
+    # Rettangolo centrale
+    delta_lat, delta_lon = 0.0010, 0.0014
+    bounds = [[f_lat - delta_lat, f_lon - delta_lon], [f_lat + delta_lat, f_lon + delta_lon]]
+    folium.Rectangle(
+        bounds=bounds,
+        color="#ffeb3b",
+        weight=4,
+        fill=True,
+        fill_color="#fbc02d",
+        fill_opacity=0.85,
+        tooltip=f"<b>{f_name}</b> ({f_crop})",
+    ).add_to(m)
+
+    # Esagono centrale + 6 esagoni
+    radius_km = 0.18
+    central_hex = get_hexagon_coords(f_lat, f_lon, radius_km=radius_km)
+    folium.Polygon(
+        locations=central_hex,
+        color="#2e7d32",
+        weight=3,
+        fill=True,
+        fill_color="#4caf50",
+        fill_opacity=0.4,
+        popup=f"<b>📍 {f_name}</b>",
+    ).add_to(m)
+
+    adj_centers = get_adjacent_hexagon_centers(f_lat, f_lon, radius_km=radius_km)
+    for s_idx, (c_lat, c_lon) in enumerate(adj_centers):
+        diag, hex_col = stati_fittizi[s_idx % len(stati_fittizi)]
+        sat_hex = get_hexagon_coords(c_lat, c_lon, radius_km=radius_km)
+        folium.Polygon(
+            locations=sat_hex,
+            color=hex_col,
+            weight=2,
+            dash_array="4, 4",
+            fill=True,
+            fill_color=hex_col,
+            fill_opacity=0.35,
+            popup=f"<b>Settore #{s_idx+1}</b><br>Rischio: {diag}",
+        ).add_to(m)
 
 st_folium(m, width=900, height=520, key="tavernelle_map")
 
+# --- BANNER INFORMATIVO COMPLETO DEL CAMPO SELEZIONATO ---
+fasi_completate = [k for k, v in active_field_data["phases"].items() if v]
+str_fasi = ", ".join(fasi_completate) if fasi_completate else "Nessuna fase registrata"
+stato_validazione = "Validato da Agronomo ✅" if active_field_data["validated"] else "In attesa di validazione ⏳"
+
+st.markdown(
+    f"""
+    <div class="info-banner">
+        <h4 style="margin:0 0 8px 0; color:#1b5e20;">📋 Scheda Informativa Integrata: {st.session_state.active_field_name}</h4>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; font-size: 14px;">
+            <div><b>🌾 Coltura:</b> {st.session_state.active_crop}</div>
+            <div><b>🚜 Trattamenti Eseguiti:</b> {active_field_data['treatments_count']}</div>
+            <div><b>🌱 Fasi Colturali:</b> {str_fasi}</div>
+            <div><b>🛡️ Validazione:</b> {stato_validazione}</div>
+        </div>
+        <div style="margin-top: 10px; font-size: 13px; color: #2e7d32;">
+            <b>📝 Note Agronomiche Attive:</b> {active_field_data['notes']}
+        </div>
+    </div>
+""",
+    unsafe_allow_html=True,
+)
+
 st.markdown("---")
 
-# --- PANNELLO GESTIONE CAMPO SELEZIONATO ---
+# --- PANNELLO GESTIONE & EDIT CAMPO ---
 col_p1, col_p2 = st.columns([1, 1])
 
 with col_p1:
-    with st.expander(f"🛠️ Controllo Stato & Fasi: {st.session_state.active_field_name}", expanded=True):
-        active_field_data["notes"] = st.text_input("📝 Note Operative / Diagnosi Campo:", value=active_field_data["notes"])
-        active_field_data["treatments_count"] = st.number_input("🚜 N° Trattamenti Eseguiti:", value=int(active_field_data["treatments_count"]), min_value=0)
+    with st.expander(f"🛠️ Modifica Parametri & Fasi: {st.session_state.active_field_name}", expanded=True):
+        active_field_data["notes"] = st.text_input("📝 Aggiorna Note Agronomiche:", value=active_field_data["notes"])
+        active_field_data["treatments_count"] = st.number_input("🚜 Numero Trattamenti:", value=int(active_field_data["treatments_count"]), min_value=0)
 
-        st.markdown("##### ⏱️ Fasi Colturali")
+        st.markdown("##### ⏱️ Fasi Colturali Eseguite")
         curr_phases = active_field_data["phases"]
 
         c_f1, c_f2, c_f3, c_f4 = st.columns(4)
@@ -388,37 +421,38 @@ with col_p1:
         p_tratt = c_f3.checkbox("🛡️ Trattam.", value=curr_phases.get("Trattamento", False))
         p_racc = c_f4.checkbox("🫒 Raccolta", value=curr_phases.get("Raccolta", False))
 
-        active_field_data["validated"] = st.checkbox("✅ Campo Validato da Agronomo", value=active_field_data["validated"])
+        active_field_data["validated"] = st.checkbox("✅ Campo Validato", value=active_field_data["validated"])
 
-        if st.button("💾 Salva Stato Campo"):
+        if st.button("💾 Salva e Aggiorna Banner"):
             active_field_data["phases"] = {"Potatura": p_pot, "Concimazione": p_conc, "Trattamento": p_tratt, "Raccolta": p_racc}
-            st.success(f"Dati per '{st.session_state.active_field_name}' aggiornati!")
+            st.success("Scheda aggiornata!")
             st.rerun()
 
 with col_p2:
-    with st.expander(f"📸 Galleria Foto: {st.session_state.active_field_name}", expanded=True):
-        uploaded_file = st.file_uploader("Carica foto ispezione (JPG/PNG):", type=["png", "jpg", "jpeg"])
+    with st.expander(f"📸 Foto Ispezione: {st.session_state.active_field_name}", expanded=True):
+        uploaded_file = st.file_uploader("Carica foto (JPG/PNG):", type=["png", "jpg", "jpeg"])
         if uploaded_file is not None:
             bytes_data = uploaded_file.getvalue()
             active_field_data["photo_b64"] = base64.b64encode(bytes_data).decode()
-            st.success("Foto allegata con successo!")
+            st.success("Foto aggiornata!")
             st.rerun()
 
         if active_field_data.get("photo_b64"):
             img_bytes = base64.b64decode(active_field_data["photo_b64"])
-            st.image(img_bytes, caption=f"Rilevamento: {st.session_state.active_field_name}", use_container_width=True)
+            st.image(img_bytes, caption=f"Ispezione Campo: {st.session_state.active_field_name}", use_container_width=True)
             if st.button("🗑️ Rimuovi Foto"):
                 active_field_data["photo_b64"] = None
                 st.rerun()
         else:
-            st.info("Nessuna foto presente per questo campo.")
+            st.info("Nessuna foto allegata.")
 
 # --- GENERATORE WHATSAPP ---
-with st.expander("📱 Invio Allerta WhatsApp al Proprietario"):
+with st.expander("📱 Invio Report WhatsApp al Proprietario"):
     msg_template = (
         f"Ciao! 🌾 Report per il campo '{st.session_state.active_field_name}' ({st.session_state.active_crop}).\n"
         f"Stato DSS: {risk_level}.\n"
         f"Diagnosi: {risk_description}\n"
+        f"Fasi completate: {str_fasi}\n"
         f"Note Agronomo: {active_field_data['notes']}"
     )
     st.markdown(f'<div class="wa-preview"><div class="wa-bubble">{msg_template.replace("\n", "<br>")}</div></div>', unsafe_allow_html=True)
@@ -438,7 +472,7 @@ with col_form:
     t_op = st.text_input("Operatore:", value="Azienda Agricola")
     t_text = st.text_area("Prodotto / Dose / Note:")
 
-    if st.button("💾 Salva in Quaderno"):
+    if st.button("💾 Salva nel Registro"):
         if t_text:
             add_treatment(
                 str(t_date),
@@ -448,7 +482,7 @@ with col_form:
                 st.session_state.active_lat,
                 st.session_state.active_lon,
             )
-            st.success("Operazione registrata!")
+            st.success("Intervento salvato!")
             st.rerun()
 
 with col_table:
@@ -458,4 +492,4 @@ with col_table:
     if not treatments_df.empty:
         st.dataframe(treatments_df, use_container_width=True, hide_index=True)
     else:
-        st.info("Nessuna operazione registrata per questo campo.")
+        st.info("Nessun intervento ancora registrato per questo campo.")
